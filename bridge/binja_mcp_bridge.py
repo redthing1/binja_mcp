@@ -69,7 +69,7 @@ def decompile_function(name: str) -> str:
     """
     Decompile a specific function by name and return the decompiled C code.
     """
-    return safe_post("decompile", name)
+    return safe_get("decompile", {"name": name})
 
 
 @mcp.tool()
