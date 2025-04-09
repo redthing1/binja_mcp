@@ -163,3 +163,11 @@ class BinaryNinjaEndpoints:
         except Exception as e:
             bn.log_error(f"Error decompiling function: {e}")
             return None
+
+    def get_assembly_function(self, identifier: str) -> Optional[str]:
+        """Get the assembly representation of a function by name or address"""
+        try:
+            return self.binary_ops.get_assembly_function(identifier)
+        except Exception as e:
+            bn.log_error(f"Error getting assembly for function: {e}")
+            return None

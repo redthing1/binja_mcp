@@ -69,8 +69,14 @@ def decompile_function(name: str) -> str:
     """
     Decompile a specific function by name and return the decompiled C code.
     """
-    return safe_post("decompile", name)
+    return safe_get("decompile", {"name": name})
 
+@mcp.tool()
+def fetch_disassembly(name: str) -> str:
+    """
+    Retrive the disassembled code of a function with a given name as assemby mnemonic instructions.
+    """
+    return safe_get("assembly", {"name": name})
 
 @mcp.tool()
 def rename_function(old_name: str, new_name: str) -> str:

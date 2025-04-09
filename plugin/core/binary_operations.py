@@ -560,3 +560,236 @@ class BinaryOperations:
         except Exception as e:
             bn.log_error(f"Failed to delete function comment: {e}")
         return False
+        
+
+    def get_assembly_function(self, identifier: Union[str, int]) -> Optional[str]:
+        """Get the assembly representation of a function with practical annotations.
+
+        Args:
+            identifier: Function name or address
+
+        Returns:
+            Assembly code as string, or None if the function cannot be found
+        """
+        if not self._current_view:
+            raise RuntimeError("No binary loaded")
+
+        try:
+            func = self.get_function_by_name_or_address(identifier)
+            if not func:
+                bn.log_error(f"Function not found: {identifier}")
+                return None
+                
+            bn.log_info(f"Found function: {func.name} at {hex(func.start)}")
+            
+            # Build variable name mapping
+            var_map = {}
+            #Temporarily disabled this functionality due to var.storage not returning the correst sp offset
+            #if hasattr(func, "vars"):
+            #    for var in func.vars:
+            #        if hasattr(var, "name") and hasattr(var, "storage"):
+            #            # Map storage location to variable name
+            #            storage_key = None
+            #            if var.core_variable.source_type == 0:
+            #                bn.log_info(f"-variable name:{var.name} source_type:{var.core_variable.source_type}  storage:{var.core_variable.storage}");
+            #                storage_key = var.core_variable.storage
+            #                var_map[storage_key] = var.name
+            
+            # Build assembly representation
+            assembly_blocks = {}
+            
+            # Check if the function has basic blocks
+            if not hasattr(func, "basic_blocks") or not func.basic_blocks:
+                bn.log_error(f"Function {func.name} has no basic blocks")
+                # Try alternate approach with linear disassembly
+                start_addr = func.start
+                try:
+                    func_length = func.total_bytes
+                    if func_length <= 0:
+                        func_length = 1024  # Use a reasonable default if length not available
+                except:
+                    func_length = 1024  # Use a reasonable default if error
+                    
+                try:
+                    # Create one big block for the entire function
+                    block_lines = []
+                    current_addr = start_addr
+                    end_addr = start_addr + func_length
+                    
+                    while current_addr < end_addr:
+                        try:
+                            # Get instruction length
+                            instr_len = self._current_view.get_instruction_length(current_addr)
+                            if instr_len <= 0:
+                                instr_len = 4  # Default to a reasonable instruction length
+                                
+                            # Get disassembly for this instruction
+                            line = self._get_instruction_with_annotations(current_addr, instr_len, var_map)
+                            if line:
+                                block_lines.append(line)
+                                
+                            # Move to next instruction
+                            current_addr += instr_len
+                        except Exception as e:
+                            bn.log_error(f"Error processing address {hex(current_addr)}: {str(e)}")
+                            block_lines.append(f"# Error at {hex(current_addr)}: {str(e)}")
+                            current_addr += 1  # Skip to next byte
+                    
+                    assembly_blocks[start_addr] = [f"# Block at {hex(start_addr)}"] + block_lines + [""]
+                    
+                except Exception as e:
+                    bn.log_error(f"Linear disassembly failed: {str(e)}")
+                    return None
+            else:
+                # Process each basic block
+                for i, block in enumerate(func.basic_blocks):
+                    try:
+                        block_lines = []
+                        
+                        # Process each address in the block
+                        addr = block.start
+                        while addr < block.end:
+                            try:
+                                # Get instruction length
+                                instr_len = self._current_view.get_instruction_length(addr)
+                                if instr_len <= 0:
+                                    instr_len = 4  # Default to a reasonable instruction length
+                                
+                                # Get disassembly for this instruction
+                                line = self._get_instruction_with_annotations(addr, instr_len, var_map)
+                                if line:
+                                    block_lines.append(line)
+                                    
+                                # Move to next instruction
+                                addr += instr_len
+                            except Exception as e:
+                                bn.log_error(f"Error processing address {hex(addr)}: {str(e)}")
+                                block_lines.append(f"# Error at {hex(addr)}: {str(e)}")
+                                addr += 1  # Skip to next byte
+                        
+                        # Store block with its starting address as key
+                        assembly_blocks[block.start] = [f"# Block {i+1} at {hex(block.start)}"] + block_lines + [""]
+                        
+                    except Exception as e:
+                        bn.log_error(f"Error processing block {i+1} at {hex(block.start)}: {str(e)}")
+                        assembly_blocks[block.start] = [f"# Error processing block {i+1} at {hex(block.start)}: {str(e)}", ""]
+            
+            # Sort blocks by address and concatenate them
+            sorted_blocks = []
+            for addr in sorted(assembly_blocks.keys()):
+                sorted_blocks.extend(assembly_blocks[addr])
+            
+            return "\n".join(sorted_blocks)
+        except Exception as e:
+            bn.log_error(f"Error getting assembly for function {identifier}: {str(e)}")
+            import traceback
+            bn.log_error(traceback.format_exc())
+            return None
+
+    def _get_instruction_with_annotations(self, addr: int, instr_len: int, var_map: Dict[int, str]) -> Optional[str]:
+        """Get a single instruction with practical annotations.
+        
+        Args:
+            addr: Address of the instruction
+            instr_len: Length of the instruction
+            var_map: Dictionary mapping offsets to variable names
+            
+        Returns:
+            Formatted instruction string with annotations
+        """
+        if not self._current_view:
+            return None
+            
+        try:
+            # Get raw bytes for fallback
+            try:
+                raw_bytes = self._current_view.read(addr, instr_len)
+                hex_bytes = ' '.join(f'{b:02x}' for b in raw_bytes)
+            except:
+                hex_bytes = "??"
+                
+            # Get basic disassembly
+            disasm_text = ""
+            try:
+                if hasattr(self._current_view, "get_disassembly"):
+                    disasm = self._current_view.get_disassembly(addr)
+                    if disasm:
+                        disasm_text = disasm
+            except:
+                disasm_text = hex_bytes + " ; [Raw bytes]"
+                
+            if not disasm_text:
+                disasm_text = hex_bytes + " ; [Raw bytes]"
+                
+            # Check if this is a call instruction and try to get target function name
+            if "call" in disasm_text.lower():
+                try:
+                    # Extract the address from the call instruction
+                    import re
+                    addr_pattern = r'0x[0-9a-fA-F]+'
+                    match = re.search(addr_pattern, disasm_text)
+                    if match:
+                        call_addr_str = match.group(0)
+                        call_addr = int(call_addr_str, 16)
+                        
+                        # Look up the target function name
+                        sym = self._current_view.get_symbol_at(call_addr)
+                        if sym and hasattr(sym, "name"):
+                            # Replace the address with the function name
+                            disasm_text = disasm_text.replace(call_addr_str, sym.name)
+                except:
+                    pass
+                    
+            # Try to annotate memory references with variable names
+            try:
+                # Look for memory references like [reg+offset]
+                import re
+                mem_ref_pattern = r'\[([^\]]+)\]'
+                mem_refs = re.findall(mem_ref_pattern, disasm_text)
+                
+                # For each memory reference, check if it's a known variable
+                for mem_ref in mem_refs:
+                    # Parse for ebp relative references
+                    offset_pattern = r'(ebp|rbp)(([+-]0x[0-9a-fA-F]+)|([+-]\d+))'
+                    offset_match = re.search(offset_pattern, mem_ref)
+                    if offset_match:
+                        # Extract base register and offset
+                        base_reg = offset_match.group(1)
+                        offset_str = offset_match.group(2)
+                        
+                        # Convert offset to integer
+                        try:
+                            offset = int(offset_str, 16) if offset_str.startswith('0x') or offset_str.startswith('-0x') else int(offset_str)      
+                            
+                            # Try to find variable name
+                            var_name = var_map.get(offset)
+                            
+                            # If found, add it to the memory reference
+                            if var_name:
+                                old_ref = f"[{mem_ref}]"
+                                new_ref = f"[{mem_ref} {{{var_name}}}]"
+                                disasm_text = disasm_text.replace(old_ref, new_ref)
+                        except:
+                            pass
+            except:
+                pass
+                
+            # Get comment if any
+            comment = None
+            try:
+                comment = self._current_view.get_comment_at(addr)
+            except:
+                pass
+                
+            # Format the final line
+            addr_str = f"{addr:08x}"
+            line = f"0x{addr_str}  {disasm_text}"
+            
+            # Add comment at the end if any
+            if comment:
+                line += f"  ; {comment}"
+                
+            return line
+        except Exception as e:
+            bn.log_error(f"Error annotating instruction at {hex(addr)}: {str(e)}")
+            return f"0x{addr:08x}  {hex_bytes} ; [Error: {str(e)}]"

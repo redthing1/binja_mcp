@@ -175,6 +175,62 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
 
                 self._handle_decompile(function_name)
 
+            elif path == "/assembly":
+                function_name = params.get("name") or params.get("functionName")
+                if not function_name:
+                    self._send_json_response(
+                        {
+                            "error": "Missing function name parameter. Use ?name=function_name or ?functionName=function_name"
+                        },
+                        400,
+                    )
+                    return
+
+                try:
+                    func_info = self.binary_ops.get_function_info(function_name)
+                    if not func_info:
+                        bn.log_error(f"Function not found: {function_name}")
+                        self._send_json_response(
+                            {
+                                "error": "Function not found",
+                                "requested_name": function_name,
+                                "available_functions": self.binary_ops.get_function_names(
+                                    0, 10
+                                ),
+                            },
+                            404,
+                        )
+                        return
+
+                    bn.log_info(f"Found function for assembly: {func_info}")
+                    assembly = self.binary_ops.get_assembly_function(function_name)
+
+                    if assembly is None:
+                        self._send_json_response(
+                            {
+                                "error": "Assembly retrieval failed",
+                                "function": func_info,
+                                "reason": "Function assembly could not be retrieved. Check the Binary Ninja log for detailed error information.",
+                            },
+                            500,
+                        )
+                    else:
+                        self._send_json_response(
+                            {"assembly": assembly, "function": func_info}
+                        )
+                except Exception as e:
+                    bn.log_error(f"Error handling assembly request: {str(e)}")
+                    import traceback
+                    bn.log_error(traceback.format_exc())
+                    self._send_json_response(
+                        {
+                            "error": "Assembly retrieval failed",
+                            "requested_name": function_name,
+                            "exception": str(e),
+                        },
+                        500,
+                    )
+
             elif path == "/comment":
                 if self.command == "GET":
                     address = params.get("address")
