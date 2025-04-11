@@ -49,6 +49,7 @@ The following table details which integrations with Binary Ninja are currently s
 | `get_function_comment` | Get the comment for a function. |
 | `delete_comment` | Delete the comment at a specific address. |
 | `delete_function_comment` | Delete the comment for a function. |
+| `get_assembly_function` | Get the assembly representation of a function by name or address. |
 
 ## Prerequisites
 

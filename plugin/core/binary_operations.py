@@ -582,23 +582,9 @@ class BinaryOperations:
                 
             bn.log_info(f"Found function: {func.name} at {hex(func.start)}")
             
-            # Build variable name mapping
-            var_map = {}
-            #Temporarily disabled this functionality due to var.storage not returning the correst sp offset
-            #if hasattr(func, "vars"):
-            #    for var in func.vars:
-            #        if hasattr(var, "name") and hasattr(var, "storage"):
-            #            # Map storage location to variable name
-            #            storage_key = None
-            #            if var.core_variable.source_type == 0:
-            #                bn.log_info(f"-variable name:{var.name} source_type:{var.core_variable.source_type}  storage:{var.core_variable.storage}");
-            #                storage_key = var.core_variable.storage
-            #                var_map[storage_key] = var.name
-            
-            # Build assembly representation
+            var_map = {}    # TODO: Implement this functionality (issues with var.storage not returning the correst sp offset)
             assembly_blocks = {}
             
-            # Check if the function has basic blocks
             if not hasattr(func, "basic_blocks") or not func.basic_blocks:
                 bn.log_error(f"Function {func.name} has no basic blocks")
                 # Try alternate approach with linear disassembly
@@ -628,7 +614,6 @@ class BinaryOperations:
                             if line:
                                 block_lines.append(line)
                                 
-                            # Move to next instruction
                             current_addr += instr_len
                         except Exception as e:
                             bn.log_error(f"Error processing address {hex(current_addr)}: {str(e)}")
@@ -641,7 +626,6 @@ class BinaryOperations:
                     bn.log_error(f"Linear disassembly failed: {str(e)}")
                     return None
             else:
-                # Process each basic block
                 for i, block in enumerate(func.basic_blocks):
                     try:
                         block_lines = []
@@ -650,7 +634,6 @@ class BinaryOperations:
                         addr = block.start
                         while addr < block.end:
                             try:
-                                # Get instruction length
                                 instr_len = self._current_view.get_instruction_length(addr)
                                 if instr_len <= 0:
                                     instr_len = 4  # Default to a reasonable instruction length
@@ -660,7 +643,6 @@ class BinaryOperations:
                                 if line:
                                     block_lines.append(line)
                                     
-                                # Move to next instruction
                                 addr += instr_len
                             except Exception as e:
                                 bn.log_error(f"Error processing address {hex(addr)}: {str(e)}")
