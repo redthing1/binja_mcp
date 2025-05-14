@@ -693,7 +693,6 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
                         500,
                     )
             elif path == "/renameVariable":
-                bn.log_info("renameVariable\n")
                 function_name = params.get("functionName")
                 if not function_name:
                     self._send_json_response(
@@ -741,7 +740,6 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
                         500,
                     )
             else:
-                bn.log_info(path)
                 self._send_json_response({"error": "Not found"}, 404)
 
         except Exception as e:
@@ -809,10 +807,6 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
             path = urllib.parse.urlparse(self.path).path
 
             bn.log_info(f"POST {path} with params: {params}")
-
-            bn.log_info("AAAAAAAAAAAAAAA")
-
-            bn.log_info(path + "\n")
 
             if path == "/load":
                 filepath = params.get("filepath")
@@ -1147,7 +1141,7 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
                     self._send_json_response({"error": "Invalid address format"}, 400)
 
             elif path == "/getFunctionComment":
-                function_name = params.get("functionName")
+                function_name = params.get("functionName") or params.get("name")
                 if not function_name:
                     self._send_json_response(
                         {
