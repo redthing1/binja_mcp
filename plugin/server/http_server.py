@@ -639,8 +639,109 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
                             "message": "No comment found for this function",
                         }
                     )
+            elif path == "/editFunctionSignature":
+                function_name = params.get("functionName")
+                if not function_name:
+                    self._send_json_response(
+                        {"error": "Missing function name parameter"}, 400
+                    )
+                    return
+                
+                signature = params.get("signature")
+                if not signature:
+                    self._send_json_response(
+                        {"error": "Missing signature parameter"}, 400
+                    )
+                    return
+                
+                try:
+                    self._send_json_response(self.endpoints.edit_function_signature(function_name, signature))
+                except Exception as e:
+                    bn.log_error(f"Error handling editFunctionSignature request: {e}")
+                    self._send_json_response(
+                        {"error": str(e)},
+                        500,
+                    )
+            elif path == "/retypeVariable":
+                function_name =  params.get("functionName")
+                if not function_name:
+                    self._send_json_response(
+                        {"error": "Missing function name parameter"}, 400
+                    )
+                    return
+                
+                variable_name = params.get("variableName")
+                if not variable_name:
+                    self._send_json_response(
+                        {"error": "Missing variable name parameter"}, 400
+                    )
+                    return
+                
+                type_str = params.get("type")
+                if not type_str:
+                    self._send_json_response(
+                        {"error": "Missing type parameter"}, 400
+                    )
+                    return
+                
+                try:
+                    self._send_json_response(self.endpoints.retype_variable(function_name, variable_name, type_str))
+                except Exception as e:
+                    bn.log_error(f"Error handling retypeVariable request: {e}")
+                    self._send_json_response(
+                        {"error": str(e)},
+                        500,
+                    )
+            elif path == "/renameVariable":
+                bn.log_info("renameVariable\n")
+                function_name = params.get("functionName")
+                if not function_name:
+                    self._send_json_response(
+                        {"error": "Missing function name parameter"}, 400
+                    )
+                    return
+                
+                variable_name = params.get("variableName")
+                if not variable_name:
+                    self._send_json_response(
+                        {"error": "Missing variable name parameter"}, 400
+                    )
+                    return
+                
+                new_name = params.get("newName")
+                if not new_name:
+                    self._send_json_response(
+                        {"error": "Missing new name parameter"}, 400
+                    )
+                    return
+                
+                try:
+                    self._send_json_response(self.endpoints.rename_variable(function_name, variable_name, new_name))
+                except Exception as e:
+                    bn.log_error(f"Error handling renameVariable request: {e}")
+                    self._send_json_response(
+                        {"error": str(e)},
+                        500,
+                    )
 
+            elif path == "/defineTypes":
+                c_code = params.get("cCode")
+                if not c_code:
+                    self._send_json_response(
+                        {"error": "Missing cCode parameter"}, 400
+                    )
+                    return
+                
+                try:
+                    self._send_json_response(self.endpoints.define_types(c_code))
+                except Exception as e:
+                    bn.log_error(f"Error handling defineTypes request: {e}")
+                    self._send_json_response(
+                        {"error": str(e)},
+                        500,
+                    )
             else:
+                bn.log_info(path)
                 self._send_json_response({"error": "Not found"}, 404)
 
         except Exception as e:
@@ -708,6 +809,10 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
             path = urllib.parse.urlparse(self.path).path
 
             bn.log_info(f"POST {path} with params: {params}")
+
+            bn.log_info("AAAAAAAAAAAAAAA")
+
+            bn.log_info(path + "\n")
 
             if path == "/load":
                 filepath = params.get("filepath")
@@ -1042,7 +1147,7 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
                     self._send_json_response({"error": "Invalid address format"}, 400)
 
             elif path == "/getFunctionComment":
-                function_name = params.get("name") or params.get("functionName")
+                function_name = params.get("functionName")
                 if not function_name:
                     self._send_json_response(
                         {
@@ -1075,7 +1180,6 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
 
             else:
                 self._send_json_response({"error": "Not found"}, 404)
-
         except Exception as e:
             bn.log_error(f"Error handling POST request: {e}")
             self._send_json_response({"error": str(e)}, 500)

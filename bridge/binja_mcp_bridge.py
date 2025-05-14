@@ -55,6 +55,33 @@ def list_methods(offset: int = 0, limit: int = 100) -> list:
     """
     return safe_get("methods", {"offset": offset, "limit": limit})
 
+@mcp.tool()
+def retype_variable(function_name: str, variable_name: str, type_str: str) -> str:
+    """
+    Retype a variable in a function.
+    """
+    return safe_get("retypeVariable", {"functionName": function_name, "variableName": variable_name, "type": type_str})
+
+@mcp.tool()
+def rename_variable(function_name: str, variable_name: str, new_name: str) -> str:
+    """
+    Rename a variable in a function.
+    """
+    return safe_get("renameVariable", {"functionName": function_name, "variableName": variable_name, "newName": new_name})
+
+@mcp.tool()
+def define_types(c_code: str) -> str:
+    """
+    Define types from a C code string.
+    """
+    return safe_get("defineTypes", {"cCode": c_code})
+
+@mcp.tool()
+def edit_function_signature(function_name: str, signature: str) -> str:
+    """
+    Edit the signature of a function.
+    """
+    return safe_get("editFunctionSignature", {"functionName": function_name, "signature": signature})
 
 @mcp.tool()
 def list_classes(offset: int = 0, limit: int = 100) -> list:

@@ -171,3 +171,137 @@ class BinaryNinjaEndpoints:
         except Exception as e:
             bn.log_error(f"Error getting assembly for function: {e}")
             return None
+
+    def define_types(self, c_code: str) -> Dict[str, str]:
+        """Define types from C code string
+        
+        Args:
+            c_code: C code string containing type definitions
+            
+        Returns:
+            Dictionary mapping type names to their string representations
+            
+        Raises:
+            RuntimeError: If no binary is loaded
+            ValueError: If parsing the types fails
+        """
+        if not self.binary_ops.current_view:
+            raise RuntimeError("No binary loaded")
+            
+        try:
+            # Parse the C code string to get type objects
+            parse_result = self.binary_ops.current_view.parse_types_from_string(c_code)
+            
+            # Define each type in the binary view
+            defined_types = {}
+            for name, type_obj in parse_result.types.items():
+                self.binary_ops.current_view.define_user_type(name, type_obj)
+                defined_types[str(name)] = str(type_obj)
+                
+            return defined_types
+        except Exception as e:
+            raise ValueError(f"Failed to define types: {str(e)}")
+
+    def rename_variable(self, function_name: str, old_name: str, new_name: str) -> Dict[str, str]:
+        """Rename a variable inside a function
+        
+        Args:
+            function_name: Name of the function containing the variable
+            old_name: Current name of the variable
+            new_name: New name for the variable
+            
+        Returns:
+            Dictionary with status message
+            
+        Raises:
+            RuntimeError: If no binary is loaded
+            ValueError: If the function is not found or variable cannot be renamed
+        """
+        if not self.binary_ops.current_view:
+            raise RuntimeError("No binary loaded")
+            
+        # Find the function by name
+        function = self.binary_ops.get_function_by_name_or_address(function_name)
+        if not function:
+            raise ValueError(f"Function '{function_name}' not found")
+            
+        # Try to rename the variable
+        try:
+            # Get the variable by name and rename it
+            variable = function.get_variable_by_name(old_name)
+            if not variable:
+                raise ValueError(f"Variable '{old_name}' not found in function '{function_name}'")
+                
+            variable.name = new_name
+            return {"status": f"Successfully renamed variable '{old_name}' to '{new_name}' in function '{function_name}'"}
+        except Exception as e:
+            raise ValueError(f"Failed to rename variable: {str(e)}")
+
+
+    def retype_variable(self, function_name: str, name: str, type_str: str) -> Dict[str, str]:
+        """Retype a variable inside a function
+        
+        Args:
+            function_name: Name of the function containing the variable
+            name: Current name of the variable
+            type: C type for the variable
+            
+        Returns:
+            Dictionary with status message
+            
+        Raises:
+            RuntimeError: If no binary is loaded
+            ValueError: If the function is not found or variable cannot be retyped
+        """
+        if not self.binary_ops.current_view:
+            raise RuntimeError("No binary loaded")
+            
+        # Find the function by name
+        function = self.binary_ops.get_function_by_name_or_address(function_name)
+        if not function:
+            raise ValueError(f"Function '{function_name}' not found")
+            
+        # Try to rename the variable
+        try:
+            # Get the variable by name and rename it
+            variable = function.get_variable_by_name(name)
+            if not variable:
+                raise ValueError(f"Variable '{name}' not found in function '{function_name}'")
+                
+            variable.type = type_str
+            return {"status": f"Successfully retyped variable '{name}' to '{type_str}' in function '{function_name}'"}
+        except Exception as e:
+            raise ValueError(f"Failed to rename variable: {str(e)}")
+
+
+    def edit_function_signature(self, function_name: str, signature: str) -> Dict[str, str]:
+        """Rename a variable inside a function
+        
+        Args:
+            function_name: Name of the function to edit the signature of
+            signature: new signature to apply
+            
+        Returns:
+            Dictionary with status message
+            
+        Raises:
+            RuntimeError: If no binary is loaded
+            ValueError: If the function is not found or variable cannot be renamed
+        """
+        if not self.binary_ops.current_view:
+            raise RuntimeError("No binary loaded")
+            
+        # Find the function by name
+        function = self.binary_ops.get_function_by_name_or_address(function_name)
+        if not function:
+            raise ValueError(f"Function '{function_name}' not found")
+            
+        function.type = self.binary_ops.current_view.parse_type_string(signature)[0]
+
+        function.reanalyze(bn.FunctionUpdateType.UserFunctionUpdate)
+            
+        try:
+            return {"status": f"Successfully"}
+        except Exception as e:
+            raise ValueError(f"Failed to rename variable: {str(e)}")
+
