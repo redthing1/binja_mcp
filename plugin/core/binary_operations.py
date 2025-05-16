@@ -360,6 +360,10 @@ class BinaryOperations:
         if not func:
             return None
 
+        # analyze func in case it was skipped
+        func.analysis_skipped = False
+        self._current_view.update_analysis_and_wait()
+
         try:
             # Try high-level IL first for best readability
             if hasattr(func, "hlil"):
