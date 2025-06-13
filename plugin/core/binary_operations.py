@@ -23,40 +23,18 @@ class BinaryOperations:
             bn.log_info("Cleared current binary view")
 
     def load_binary(self, filepath: str) -> bn.BinaryView:
-        """Load a binary file using the appropriate method based on the Binary Ninja API version"""
+        """Load a binary file using Binary Ninja's modern open_view API"""
         try:
-            if hasattr(bn, "open_view"):
-                bn.log_info("Using bn.open_view method")
-                self._current_view = bn.open_view(filepath)
-            elif hasattr(bn, "BinaryViewType") and hasattr(
-                bn.BinaryViewType, "get_view_of_file"
-            ):
-                bn.log_info("Using BinaryViewType.get_view_of_file method")
-                file_metadata = bn.FileMetadata()
-                try:
-                    if hasattr(bn.BinaryViewType, "get_default_options"):
-                        options = bn.BinaryViewType.get_default_options()
-                        self._current_view = bn.BinaryViewType.get_view_of_file(
-                            filepath, file_metadata, options
-                        )
-                    else:
-                        self._current_view = bn.BinaryViewType.get_view_of_file(
-                            filepath, file_metadata
-                        )
-                except TypeError:
-                    self._current_view = bn.BinaryViewType.get_view_of_file(filepath)
-            else:
-                bn.log_info("Using legacy method")
-                file_metadata = bn.FileMetadata()
-                binary_view_type = bn.BinaryViewType.get_view_of_file_with_options(
-                    filepath, file_metadata
-                )
-                if binary_view_type:
-                    self._current_view = binary_view_type.open()
-                else:
-                    raise Exception("No view type available for this file")
-
+            bn.log_info(f"Loading binary: {filepath}")
+            # Use the modern bn.open_view method which is the recommended approach
+            self._current_view = bn.open_view(filepath)
+            
+            if self._current_view is None:
+                raise Exception(f"Failed to open binary file: {filepath}")
+                
+            bn.log_info(f"Successfully loaded binary: {self._current_view.file.filename}")
             return self._current_view
+            
         except Exception as e:
             bn.log_error(f"Failed to load binary: {e}")
             raise
@@ -366,11 +344,13 @@ class BinaryOperations:
 
         try:
             # Try high-level IL first for best readability
-            if hasattr(func, "hlil"):
-                return str(func.hlil)
+            hlil = func.hlil_if_available
+            if hlil:
+                return str(hlil)
             # Fall back to medium-level IL if available
-            elif hasattr(func, "mlil"):
-                return str(func.mlil)
+            mlil = func.mlil_if_available
+            if mlil:
+                return str(mlil)
             # Use basic function representation as last resort
             else:
                 return str(func)
@@ -822,7 +802,7 @@ class BinaryOperations:
                 
             # Get all code references to the function's start address
             code_refs = []
-            for ref in list(self._current_view.get_code_refs(func.start)):
+            for ref in self._current_view.get_code_refs(func.start):
                 try:
                     # For each reference, get the containing function and address
                     if ref.function:
@@ -923,3 +903,2560 @@ class BinaryOperations:
         except Exception as e:
             bn.log_error(f"Error getting user-defined type {type_name}: {e}")
             return None
+
+    # ========== STRING ANALYSIS METHODS ==========
+    
+    def get_strings(self, min_length: int = 4, encoding: str = 'utf-8', offset: int = 0, limit: int = 100) -> List[Dict[str, Any]]:
+        """Get all strings found in the binary with pagination.
+        
+        Args:
+            min_length: Minimum string length to include
+            encoding: String encoding to search for ('utf-8', 'utf-16', 'ascii')
+            offset: Pagination offset
+            limit: Maximum number of strings to return
+            
+        Returns:
+            List of dictionaries containing string information
+        """
+        if not self._current_view:
+            raise RuntimeError("No binary loaded")
+            
+        try:
+            strings_found = []
+            
+            # Get all strings from Binary Ninja
+            for string_ref in self._current_view.strings:
+                try:
+                    if len(string_ref.value) >= min_length:
+                        # Get cross-references to this string
+                        xrefs = []
+                        for ref in self._current_view.get_code_refs(string_ref.start):
+                            if ref.function:
+                                xrefs.append({
+                                    "function": ref.function.name,
+                                    "address": hex(ref.address)
+                                })
+                        
+                        strings_found.append({
+                            "address": hex(string_ref.start),
+                            "length": string_ref.length,
+                            "value": string_ref.value,
+                            "type": str(string_ref.type) if hasattr(string_ref, 'type') else 'unknown',
+                            "xrefs": xrefs,
+                            "xref_count": len(xrefs)
+                        })
+                except Exception as e:
+                    bn.log_error(f"Error processing string at {hex(string_ref.start)}: {e}")
+                    continue
+                    
+            # Sort by address and apply pagination
+            strings_found.sort(key=lambda x: int(x["address"], 16))
+            return strings_found[offset:offset + limit]
+            
+        except Exception as e:
+            bn.log_error(f"Error getting strings: {e}")
+            return []
+
+    def search_strings(self, pattern: str, regex: bool = False, case_sensitive: bool = False, offset: int = 0, limit: int = 100) -> List[Dict[str, Any]]:
+        """Search for strings matching a pattern.
+        
+        Args:
+            pattern: Search pattern
+            regex: Whether to treat pattern as regex
+            case_sensitive: Whether search should be case sensitive
+            offset: Pagination offset
+            limit: Maximum results to return
+            
+        Returns:
+            List of matching string dictionaries
+        """
+        if not self._current_view:
+            raise RuntimeError("No binary loaded")
+            
+        try:
+            import re
+            matches = []
+            
+            # Compile regex pattern if needed
+            if regex:
+                flags = 0 if case_sensitive else re.IGNORECASE
+                compiled_pattern = re.compile(pattern, flags)
+            
+            for string_ref in self._current_view.strings:
+                try:
+                    string_value = string_ref.value
+                    match_found = False
+                    
+                    if regex:
+                        match_found = bool(compiled_pattern.search(string_value))
+                    else:
+                        if case_sensitive:
+                            match_found = pattern in string_value
+                        else:
+                            match_found = pattern.lower() in string_value.lower()
+                    
+                    if match_found:
+                        # Get cross-references
+                        xrefs = []
+                        for ref in self._current_view.get_code_refs(string_ref.start):
+                            if ref.function:
+                                xrefs.append({
+                                    "function": ref.function.name,
+                                    "address": hex(ref.address)
+                                })
+                        
+                        matches.append({
+                            "address": hex(string_ref.start),
+                            "length": string_ref.length,
+                            "value": string_value,
+                            "type": str(string_ref.type) if hasattr(string_ref, 'type') else 'unknown',
+                            "xrefs": xrefs,
+                            "xref_count": len(xrefs)
+                        })
+                except Exception as e:
+                    bn.log_error(f"Error processing string at {hex(string_ref.start)}: {e}")
+                    continue
+                    
+            # Sort by address and apply pagination
+            matches.sort(key=lambda x: int(x["address"], 16))
+            return matches[offset:offset + limit]
+            
+        except Exception as e:
+            bn.log_error(f"Error searching strings: {e}")
+            return []
+
+    def get_string_references(self, string_address: int) -> List[Dict[str, Any]]:
+        """Get all references to a specific string.
+        
+        Args:
+            string_address: Address of the string
+            
+        Returns:
+            List of reference information
+        """
+        if not self._current_view:
+            raise RuntimeError("No binary loaded")
+            
+        try:
+            references = []
+            
+            # Get code references
+            for ref in self._current_view.get_code_refs(string_address):
+                ref_info = {
+                    "type": "code",
+                    "address": hex(ref.address),
+                    "function": ref.function.name if ref.function else None
+                }
+                
+                # Try to get the instruction that references the string
+                try:
+                    disasm = self._current_view.get_disassembly(ref.address)
+                    if disasm:
+                        ref_info["instruction"] = disasm
+                except:
+                    pass
+                    
+                references.append(ref_info)
+            
+            # Get data references
+            for ref in self._current_view.get_data_refs(string_address):
+                references.append({
+                    "type": "data",
+                    "address": hex(ref),
+                    "function": None
+                })
+                
+            return references
+            
+        except Exception as e:
+            bn.log_error(f"Error getting string references: {e}")
+            return []
+
+    def analyze_string_usage(self) -> Dict[str, Any]:
+        """Analyze string usage patterns in the binary.
+        
+        Returns:
+            Dictionary with string usage statistics
+        """
+        if not self._current_view:
+            raise RuntimeError("No binary loaded")
+            
+        try:
+            stats = {
+                "total_strings": 0,
+                "referenced_strings": 0,
+                "unreferenced_strings": 0,
+                "avg_string_length": 0,
+                "common_patterns": [],
+                "encoding_distribution": {},
+                "length_distribution": {}
+            }
+            
+            total_length = 0
+            length_buckets = {
+                "1-10": 0, "11-50": 0, "51-100": 0, "101-500": 0, "500+": 0
+            }
+            
+            for string_ref in self._current_view.strings:
+                stats["total_strings"] += 1
+                total_length += len(string_ref.value)
+                
+                # Count references
+                ref_count = sum(1 for _ in self._current_view.get_code_refs(string_ref.start))
+                if ref_count > 0:
+                    stats["referenced_strings"] += 1
+                else:
+                    stats["unreferenced_strings"] += 1
+                
+                # Length distribution
+                length = len(string_ref.value)
+                if length <= 10:
+                    length_buckets["1-10"] += 1
+                elif length <= 50:
+                    length_buckets["11-50"] += 1
+                elif length <= 100:
+                    length_buckets["51-100"] += 1
+                elif length <= 500:
+                    length_buckets["101-500"] += 1
+                else:
+                    length_buckets["500+"] += 1
+                
+                # Encoding type
+                encoding_type = str(string_ref.type) if hasattr(string_ref, 'type') else 'unknown'
+                stats["encoding_distribution"][encoding_type] = stats["encoding_distribution"].get(encoding_type, 0) + 1
+            
+            if stats["total_strings"] > 0:
+                stats["avg_string_length"] = total_length / stats["total_strings"]
+            
+            stats["length_distribution"] = length_buckets
+            
+            return stats
+            
+        except Exception as e:
+            bn.log_error(f"Error analyzing string usage: {e}")
+            return {}
+
+    # ========== TAG MANAGEMENT METHODS ==========
+    
+    def get_tag_types(self) -> List[Dict[str, Any]]:
+        """Get all available tag types in the binary view.
+        
+        Returns:
+            List of dictionaries containing tag type information
+        """
+        if not self._current_view:
+            raise RuntimeError("No binary loaded")
+            
+        try:
+            tag_types = []
+            for tag_type in self._current_view.tag_types.values():
+                tag_types.append({
+                    "id": tag_type.id,
+                    "name": tag_type.name,
+                    "icon": tag_type.icon,
+                    "visible": tag_type.visible,
+                    "type": str(tag_type.type) if hasattr(tag_type, 'type') else 'unknown'
+                })
+            
+            return sorted(tag_types, key=lambda x: x["name"])
+            
+        except Exception as e:
+            bn.log_error(f"Error getting tag types: {e}")
+            return []
+
+    def create_tag_type(self, name: str, icon: str = "🏷️", visible: bool = True) -> Dict[str, Any]:
+        """Create a new tag type.
+        
+        Args:
+            name: Name of the tag type
+            icon: Icon character for the tag type
+            visible: Whether the tag type should be visible
+            
+        Returns:
+            Dictionary with the created tag type information
+        """
+        if not self._current_view:
+            raise RuntimeError("No binary loaded")
+            
+        try:
+            # Check if tag type already exists
+            for existing_type in self._current_view.tag_types.values():
+                if existing_type.name == name:
+                    return {
+                        "success": False,
+                        "error": f"Tag type '{name}' already exists",
+                        "existing_id": existing_type.id
+                    }
+            
+            # Create new tag type
+            tag_type = self._current_view.create_tag_type(name, icon)
+            if tag_type:
+                tag_type.visible = visible
+                return {
+                    "success": True,
+                    "id": tag_type.id,
+                    "name": tag_type.name,
+                    "icon": tag_type.icon,
+                    "visible": tag_type.visible
+                }
+            else:
+                return {
+                    "success": False,
+                    "error": "Failed to create tag type"
+                }
+                
+        except Exception as e:
+            bn.log_error(f"Error creating tag type: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
+    def get_tags(self, tag_type_name: str = None, offset: int = 0, limit: int = 100) -> List[Dict[str, Any]]:
+        """Get tags in the binary, optionally filtered by tag type.
+        
+        Args:
+            tag_type_name: Optional tag type name to filter by
+            offset: Pagination offset
+            limit: Maximum number of tags to return
+            
+        Returns:
+            List of dictionaries containing tag information
+        """
+        if not self._current_view:
+            raise RuntimeError("No binary loaded")
+            
+        try:
+            all_tags = []
+            
+            # Get tags from functions
+            for func in self._current_view.functions:
+                for tag in func.tags:
+                    if tag_type_name is None or tag.type.name == tag_type_name:
+                        all_tags.append({
+                            "id": tag.id,
+                            "type": tag.type.name,
+                            "type_id": tag.type.id,
+                            "address": hex(func.start),
+                            "location_type": "function",
+                            "function_name": func.name,
+                            "data": tag.data if hasattr(tag, 'data') else None
+                        })
+            
+            # Get tags from addresses
+            for address_tag in self._current_view.address_tags:
+                tag = address_tag.tag
+                if tag_type_name is None or tag.type.name == tag_type_name:
+                    all_tags.append({
+                        "id": tag.id,
+                        "type": tag.type.name,
+                        "type_id": tag.type.id,
+                        "address": hex(address_tag.address),
+                        "location_type": "address",
+                        "function_name": None,
+                        "data": tag.data if hasattr(tag, 'data') else None
+                    })
+            
+            # Get tags from data
+            for data_tag in self._current_view.data_tags:
+                tag = data_tag.tag
+                if tag_type_name is None or tag.type.name == tag_type_name:
+                    all_tags.append({
+                        "id": tag.id,
+                        "type": tag.type.name,
+                        "type_id": tag.type.id,
+                        "address": hex(data_tag.address),
+                        "location_type": "data",
+                        "function_name": None,
+                        "data": tag.data if hasattr(tag, 'data') else None
+                    })
+            
+            # Sort by address and apply pagination
+            all_tags.sort(key=lambda x: int(x["address"], 16))
+            return all_tags[offset:offset + limit]
+            
+        except Exception as e:
+            bn.log_error(f"Error getting tags: {e}")
+            return []
+
+    def create_address_tag(self, tag_type_name: str, address: int, data: str = None) -> Dict[str, Any]:
+        """Create a tag at a specific address.
+        
+        Args:
+            tag_type_name: Name of the tag type
+            address: Address to tag
+            data: Optional data associated with the tag
+            
+        Returns:
+            Dictionary with operation result
+        """
+        if not self._current_view:
+            raise RuntimeError("No binary loaded")
+            
+        try:
+            # Check if tag type exists
+            tag_type_exists = False
+            for tt in self._current_view.tag_types.values():
+                if tt.name == tag_type_name:
+                    tag_type_exists = True
+                    break
+            
+            if not tag_type_exists:
+                return {
+                    "success": False,
+                    "error": f"Tag type '{tag_type_name}' not found"
+                }
+            
+            # Create the tag using add_tag method
+            self._current_view.add_tag(address, tag_type_name, data or "", True)
+            
+            return {
+                "success": True,
+                "address": hex(address),
+                "type": tag_type_name,
+                "data": data
+            }
+                
+        except Exception as e:
+            bn.log_error(f"Error creating address tag: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
+    def create_function_tag(self, tag_type_name: str, function_name: str, data: str = None) -> Dict[str, Any]:
+        """Create a tag on a function.
+        
+        Args:
+            tag_type_name: Name of the tag type
+            function_name: Name of the function to tag
+            data: Optional data associated with the tag
+            
+        Returns:
+            Dictionary with operation result
+        """
+        if not self._current_view:
+            raise RuntimeError("No binary loaded")
+            
+        try:
+            # Find the function
+            func = self.get_function_by_name_or_address(function_name)
+            if not func:
+                return {
+                    "success": False,
+                    "error": f"Function '{function_name}' not found"
+                }
+            
+            # Check if tag type exists
+            tag_type_exists = False
+            for tt in self._current_view.tag_types.values():
+                if tt.name == tag_type_name:
+                    tag_type_exists = True
+                    break
+            
+            if not tag_type_exists:
+                return {
+                    "success": False,
+                    "error": f"Tag type '{tag_type_name}' not found"
+                }
+            
+            # Create the tag using function's add_tag method
+            func.add_tag(tag_type_name, data or "")
+            
+            return {
+                "success": True,
+                "function": function_name,
+                "address": hex(func.start),
+                "type": tag_type_name,
+                "data": data
+            }
+                
+        except Exception as e:
+            bn.log_error(f"Error creating function tag: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
+    def create_data_tag(self, tag_type_name: str, address: int, data: str = None) -> Dict[str, Any]:
+        """Create a tag on data at a specific address.
+        
+        Args:
+            tag_type_name: Name of the tag type
+            address: Address of the data to tag
+            data: Optional data associated with the tag
+            
+        Returns:
+            Dictionary with operation result
+        """
+        if not self._current_view:
+            raise RuntimeError("No binary loaded")
+            
+        try:
+            # Check if tag type exists
+            tag_type_exists = False
+            for tt in self._current_view.tag_types.values():
+                if tt.name == tag_type_name:
+                    tag_type_exists = True
+                    break
+            
+            if not tag_type_exists:
+                return {
+                    "success": False,
+                    "error": f"Tag type '{tag_type_name}' not found"
+                }
+            
+            # Create the data tag using add_tag method (same as address tag)
+            self._current_view.add_tag(address, tag_type_name, data or "", True)
+            
+            return {
+                "success": True,
+                "address": hex(address),
+                "type": tag_type_name,
+                "data": data
+            }
+                
+        except Exception as e:
+            bn.log_error(f"Error creating data tag: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
+    def get_tags_at_address(self, address: int) -> List[Dict[str, Any]]:
+        """Get all tags at a specific address.
+        
+        Args:
+            address: Address to check for tags
+            
+        Returns:
+            List of tags at the address
+        """
+        if not self._current_view:
+            raise RuntimeError("No binary loaded")
+            
+        try:
+            tags_at_address = []
+            
+            # Get tags at the address
+            for tag in self._current_view.get_tags_at(address):
+                tags_at_address.append({
+                    "id": tag.id,
+                    "type": tag.type.name,
+                    "location_type": "address",
+                    "data": tag.data if hasattr(tag, 'data') else None
+                })
+            
+            # Check if address is in a function and get function tags
+            func = self._current_view.get_function_at(address)
+            if func:
+                for tag in func.tags:
+                    tags_at_address.append({
+                        "id": tag.id,
+                        "type": tag.type.name,
+                        "location_type": "function",
+                        "function_name": func.name,
+                        "data": tag.data if hasattr(tag, 'data') else None
+                    })
+            
+            return tags_at_address
+            
+        except Exception as e:
+            bn.log_error(f"Error getting tags at address: {e}")
+            return []
+
+    def remove_tag(self, tag_id: str) -> Dict[str, Any]:
+        """Remove a tag by its ID.
+        
+        NOTE: Binary Ninja's tag removal API is complex and requires knowing
+        the tag's address and type. This is a simplified implementation.
+        
+        Args:
+            tag_id: ID of the tag to remove
+            
+        Returns:
+            Dictionary with operation result
+        """
+        if not self._current_view:
+            raise RuntimeError("No binary loaded")
+            
+        try:
+            # This is a limitation of the current Binary Ninja API
+            # We cannot easily remove tags by ID alone
+            return {
+                "success": False,
+                "error": "Tag removal by ID is not supported in current Binary Ninja API. Use remove_user_data_tag() or similar methods with address and tag object.",
+                "note": "Binary Ninja requires address and tag object for removal, not just tag ID"
+            }
+                
+        except Exception as e:
+            bn.log_error(f"Error removing tag: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
+    def search_tags(self, query: str) -> List[Dict[str, Any]]:
+        """Search tags by their data content.
+        
+        Args:
+            query: Search query to match against tag data
+            
+        Returns:
+            List of matching tags
+        """
+        if not self._current_view:
+            raise RuntimeError("No binary loaded")
+            
+        try:
+            matching_tags = []
+            query_lower = query.lower()
+            
+            # Search all tags for matching data
+            for tag_info in self.get_tags():
+                if tag_info.get("data") and query_lower in tag_info["data"].lower():
+                    matching_tags.append(tag_info)
+            
+            return matching_tags
+            
+        except Exception as e:
+            bn.log_error(f"Error searching tags: {e}")
+            return []
+
+    # ========== ENHANCED CROSS-REFERENCE ANALYSIS METHODS ==========
+    
+    def get_all_references_to(self, address: int) -> Dict[str, List[Dict[str, Any]]]:
+        """Get all references (code and data) to a specific address.
+        
+        Args:
+            address: Target address to find references to
+            
+        Returns:
+            Dictionary with 'code_refs' and 'data_refs' lists
+        """
+        if not self._current_view:
+            raise RuntimeError("No binary loaded")
+            
+        try:
+            result = {
+                "code_refs": [],
+                "data_refs": []
+            }
+            
+            # Get code references
+            for ref in self._current_view.get_code_refs(address):
+                ref_info = {
+                    "address": hex(ref.address),
+                    "function": ref.function.name if ref.function else None,
+                    "function_address": hex(ref.function.start) if ref.function else None
+                }
+                
+                # Try to get the instruction
+                try:
+                    disasm = self._current_view.get_disassembly(ref.address)
+                    if disasm:
+                        ref_info["instruction"] = disasm
+                except:
+                    pass
+                    
+                result["code_refs"].append(ref_info)
+            
+            # Get data references
+            for ref_addr in self._current_view.get_data_refs(address):
+                ref_info = {
+                    "address": hex(ref_addr),
+                    "type": "data"
+                }
+                
+                # Check if this data reference is in a function
+                func = self._current_view.get_function_at(ref_addr)
+                if func:
+                    ref_info["function"] = func.name
+                    ref_info["function_address"] = hex(func.start)
+                
+                result["data_refs"].append(ref_info)
+            
+            return result
+            
+        except Exception as e:
+            bn.log_error(f"Error getting references to {hex(address)}: {e}")
+            return {"code_refs": [], "data_refs": []}
+
+    def get_all_references_from(self, address: int) -> Dict[str, List[Dict[str, Any]]]:
+        """Get all references from a specific address.
+        
+        Args:
+            address: Source address to find references from
+            
+        Returns:
+            Dictionary with references made from this address
+        """
+        if not self._current_view:
+            raise RuntimeError("No binary loaded")
+            
+        try:
+            result = {
+                "code_refs": [],
+                "data_refs": []
+            }
+            
+            # Check if this address is in a function
+            func = self._current_view.get_function_at(address)
+            if func:
+                # Get all code references made from this function
+                for ref_addr in self._current_view.get_code_refs_from(address, func):
+                    target_func = self._current_view.get_function_at(ref_addr)
+                    result["code_refs"].append({
+                        "target_address": hex(ref_addr),
+                        "target_function": target_func.name if target_func else None,
+                        "source_address": hex(address),
+                        "source_function": func.name
+                    })
+                
+                # Get all data references made from this function
+                for ref_addr in self._current_view.get_data_refs_from(address):
+                    result["data_refs"].append({
+                        "target_address": hex(ref_addr),
+                        "source_address": hex(address),
+                        "source_function": func.name
+                    })
+            
+            return result
+            
+        except Exception as e:
+            bn.log_error(f"Error getting references from {hex(address)}: {e}")
+            return {"code_refs": [], "data_refs": []}
+
+    def find_constant_usage(self, value: int, size: int = None) -> List[Dict[str, Any]]:
+        """Find all uses of a specific constant value.
+        
+        Args:
+            value: Constant value to search for
+            size: Optional size constraint (1, 2, 4, 8 bytes)
+            
+        Returns:
+            List of locations where the constant is used
+        """
+        if not self._current_view:
+            raise RuntimeError("No binary loaded")
+            
+        try:
+            constant_uses = []
+            
+            # Search through all functions for the constant
+            for func in self._current_view.functions:
+                try:
+                    # Check HLIL for constant usage
+                    hlil = func.hlil_if_available
+                    if hlil:
+                        for block in hlil:
+                            for instr in block:
+                                # Look for constant operands
+                                if hasattr(instr, 'operands'):
+                                    for operand in instr.operands:
+                                        if hasattr(operand, 'constant') and operand.constant == value:
+                                            constant_uses.append({
+                                                "address": hex(instr.address),
+                                                "function": func.name,
+                                                "instruction": str(instr),
+                                                "value": value,
+                                                "context": "hlil"
+                                            })
+                    
+                    # Also check disassembly for immediate values
+                    for block in func.basic_blocks:
+                        addr = block.start
+                        while addr < block.end:
+                            try:
+                                disasm = self._current_view.get_disassembly(addr)
+                                if disasm and (hex(value) in disasm or str(value) in disasm):
+                                    constant_uses.append({
+                                        "address": hex(addr),
+                                        "function": func.name,
+                                        "instruction": disasm,
+                                        "value": value,
+                                        "context": "disassembly"
+                                    })
+                                
+                                instr_len = self._current_view.get_instruction_length(addr)
+                                if instr_len <= 0:
+                                    instr_len = 1
+                                addr += instr_len
+                            except:
+                                addr += 1
+                                
+                except Exception as e:
+                    bn.log_error(f"Error searching function {func.name}: {e}")
+                    continue
+            
+            return constant_uses
+            
+        except Exception as e:
+            bn.log_error(f"Error finding constant usage: {e}")
+            return []
+
+    def get_call_graph(self, function_name: str, depth: int = 2, direction: str = "both") -> Dict[str, Any]:
+        """Get call graph relationships for a function.
+        
+        Args:
+            function_name: Name of the function to analyze
+            depth: Maximum depth to traverse
+            direction: 'callers', 'callees', or 'both'
+            
+        Returns:
+            Dictionary with call graph information
+        """
+        if not self._current_view:
+            raise RuntimeError("No binary loaded")
+            
+        try:
+            func = self.get_function_by_name_or_address(function_name)
+            if not func:
+                return {"error": f"Function '{function_name}' not found"}
+            
+            call_graph = {
+                "root_function": {
+                    "name": func.name,
+                    "address": hex(func.start)
+                },
+                "callers": {},
+                "callees": {}
+            }
+            
+            def get_callers(target_func, current_depth):
+                if current_depth > depth:
+                    return {}
+                
+                callers = {}
+                for ref in self._current_view.get_code_refs(target_func.start):
+                    if ref.function and ref.function != target_func:
+                        caller_info = {
+                            "name": ref.function.name,
+                            "address": hex(ref.function.start),
+                            "call_address": hex(ref.address),
+                            "depth": current_depth
+                        }
+                        
+                        # Recursively get callers if we haven't reached depth limit
+                        if current_depth < depth:
+                            caller_info["callers"] = get_callers(ref.function, current_depth + 1)
+                        
+                        callers[ref.function.name] = caller_info
+                
+                return callers
+            
+            def get_callees(source_func, current_depth):
+                if current_depth > depth:
+                    return {}
+                
+                callees = {}
+                try:
+                    hlil = source_func.hlil_if_available
+                    if hlil:
+                        for block in hlil:
+                            for instr in block:
+                                if hasattr(instr, 'dest') and hasattr(instr.dest, 'constant'):
+                                    target_addr = instr.dest.constant
+                                    target_func = self._current_view.get_function_at(target_addr)
+                                    if target_func and target_func != source_func:
+                                        callee_info = {
+                                            "name": target_func.name,
+                                            "address": hex(target_func.start),
+                                            "call_address": hex(instr.address),
+                                            "depth": current_depth
+                                        }
+                                        
+                                        # Recursively get callees if we haven't reached depth limit
+                                        if current_depth < depth:
+                                            callee_info["callees"] = get_callees(target_func, current_depth + 1)
+                                        
+                                        callees[target_func.name] = callee_info
+                except:
+                    pass
+                
+                return callees
+            
+            if direction in ["callers", "both"]:
+                call_graph["callers"] = get_callers(func, 1)
+            
+            if direction in ["callees", "both"]:
+                call_graph["callees"] = get_callees(func, 1)
+            
+            return call_graph
+            
+        except Exception as e:
+            bn.log_error(f"Error getting call graph: {e}")
+            return {"error": str(e)}
+
+    def find_function_callers(self, function_name: str, recursive: bool = False) -> List[Dict[str, Any]]:
+        """Enhanced function caller analysis.
+        
+        Args:
+            function_name: Name of the function to find callers for
+            recursive: Whether to find callers recursively
+            
+        Returns:
+            List of caller information
+        """
+        if not self._current_view:
+            raise RuntimeError("No binary loaded")
+            
+        try:
+            func = self.get_function_by_name_or_address(function_name)
+            if not func:
+                return []
+            
+            callers = []
+            visited = set()
+            
+            def find_callers_recursive(target_func, depth=0):
+                if target_func.name in visited:
+                    return
+                
+                visited.add(target_func.name)
+                
+                for ref in self._current_view.get_code_refs(target_func.start):
+                    if ref.function and ref.function != target_func:
+                        caller_info = {
+                            "function": ref.function.name,
+                            "function_address": hex(ref.function.start),
+                            "call_address": hex(ref.address),
+                            "depth": depth
+                        }
+                        
+                        # Try to get the call instruction
+                        try:
+                            disasm = self._current_view.get_disassembly(ref.address)
+                            if disasm:
+                                caller_info["instruction"] = disasm
+                        except:
+                            pass
+                        
+                        callers.append(caller_info)
+                        
+                        # Recursive search if enabled
+                        if recursive and depth < 5:  # Limit depth to prevent infinite recursion
+                            find_callers_recursive(ref.function, depth + 1)
+            
+            find_callers_recursive(func)
+            
+            # Sort by depth and function name
+            callers.sort(key=lambda x: (x["depth"], x["function"]))
+            
+            return callers
+            
+        except Exception as e:
+            bn.log_error(f"Error finding function callers: {e}")
+            return []
+
+    def analyze_cross_references_summary(self) -> Dict[str, Any]:
+        """Get a summary of cross-reference patterns in the binary.
+        
+        Returns:
+            Dictionary with cross-reference statistics
+        """
+        if not self._current_view:
+            raise RuntimeError("No binary loaded")
+            
+        try:
+            summary = {
+                "total_functions": len(self._current_view.functions),
+                "functions_with_callers": 0,
+                "functions_without_callers": 0,
+                "max_callers": 0,
+                "most_called_function": None,
+                "orphaned_functions": [],
+                "highly_called_functions": []
+            }
+            
+            function_call_counts = {}
+            
+            for func in self._current_view.functions:
+                caller_count = sum(1 for _ in self._current_view.get_code_refs(func.start))
+                function_call_counts[func.name] = caller_count
+                
+                if caller_count > 0:
+                    summary["functions_with_callers"] += 1
+                    if caller_count > summary["max_callers"]:
+                        summary["max_callers"] = caller_count
+                        summary["most_called_function"] = func.name
+                else:
+                    summary["functions_without_callers"] += 1
+                    summary["orphaned_functions"].append({
+                        "name": func.name,
+                        "address": hex(func.start)
+                    })
+            
+            # Find highly called functions (top 10% by call count)
+            sorted_functions = sorted(function_call_counts.items(), key=lambda x: x[1], reverse=True)
+            top_10_percent = max(1, len(sorted_functions) // 10)
+            
+            for func_name, call_count in sorted_functions[:top_10_percent]:
+                if call_count > 0:
+                    func = self.get_function_by_name_or_address(func_name)
+                    if func:
+                        summary["highly_called_functions"].append({
+                            "name": func_name,
+                            "address": hex(func.start),
+                            "caller_count": call_count
+                        })
+            
+            return summary
+            
+        except Exception as e:
+            bn.log_error(f"Error analyzing cross-references: {e}")
+            return {}
+
+    # ========== MEMORY & DATA ANALYSIS METHODS ==========
+    
+    def read_bytes(self, address: int, length: int) -> Dict[str, Any]:
+        """Read raw bytes from the binary at a specific address.
+        
+        Args:
+            address: Address to read from
+            length: Number of bytes to read
+            
+        Returns:
+            Dictionary with bytes data and metadata
+        """
+        if not self._current_view:
+            raise RuntimeError("No binary loaded")
+            
+        try:
+            if not self._current_view.is_valid_offset(address):
+                return {
+                    "success": False,
+                    "error": f"Invalid address: {hex(address)}"
+                }
+            
+            if not self._current_view.is_offset_readable(address):
+                return {
+                    "success": False,
+                    "error": f"Address not readable: {hex(address)}"
+                }
+            
+            # Check if we can read the requested length
+            max_readable = min(length, self._current_view.end - address)
+            if max_readable <= 0:
+                return {
+                    "success": False,
+                    "error": f"Cannot read {length} bytes from {hex(address)}"
+                }
+            
+            raw_bytes = self._current_view.read(address, max_readable)
+            if raw_bytes is None:
+                return {
+                    "success": False,
+                    "error": "Failed to read data"
+                }
+            
+            # Convert to hex string for JSON serialization
+            hex_data = raw_bytes.hex()
+            
+            return {
+                "success": True,
+                "address": hex(address),
+                "length": max_readable,
+                "requested_length": length,
+                "data": hex_data,
+                "ascii": "".join(chr(b) if 32 <= b <= 126 else '.' for b in raw_bytes)
+            }
+            
+        except Exception as e:
+            bn.log_error(f"Error reading bytes: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
+    def write_bytes(self, address: int, data: str) -> Dict[str, Any]:
+        """Write bytes to the binary at a specific address.
+        
+        Args:
+            address: Address to write to
+            data: Hex string of data to write (e.g., "41424344")
+            
+        Returns:
+            Dictionary with operation result
+        """
+        if not self._current_view:
+            raise RuntimeError("No binary loaded")
+            
+        try:
+            if not self._current_view.is_valid_offset(address):
+                return {
+                    "success": False,
+                    "error": f"Invalid address: {hex(address)}"
+                }
+            
+            if not self._current_view.is_offset_writable(address):
+                return {
+                    "success": False,
+                    "error": f"Address not writable: {hex(address)}"
+                }
+            
+            # Convert hex string to bytes
+            try:
+                if data.startswith("0x"):
+                    data = data[2:]
+                bytes_data = bytes.fromhex(data)
+            except ValueError:
+                return {
+                    "success": False,
+                    "error": "Invalid hex data format"
+                }
+            
+            # Write the data
+            bytes_written = self._current_view.write(address, bytes_data)
+            
+            if bytes_written == len(bytes_data):
+                return {
+                    "success": True,
+                    "address": hex(address),
+                    "bytes_written": bytes_written,
+                    "data": data
+                }
+            else:
+                return {
+                    "success": False,
+                    "error": f"Only wrote {bytes_written} of {len(bytes_data)} bytes"
+                }
+                
+        except Exception as e:
+            bn.log_error(f"Error writing bytes: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
+    def get_instruction_at(self, address: int) -> Dict[str, Any]:
+        """Get detailed instruction information at a specific address.
+        
+        Args:
+            address: Address of the instruction
+            
+        Returns:
+            Dictionary with instruction details
+        """
+        if not self._current_view:
+            raise RuntimeError("No binary loaded")
+            
+        try:
+            if not self._current_view.is_valid_offset(address):
+                return {
+                    "success": False,
+                    "error": f"Invalid address: {hex(address)}"
+                }
+            
+            # Get instruction length and disassembly
+            instr_len = self._current_view.get_instruction_length(address)
+            if instr_len <= 0:
+                return {
+                    "success": False,
+                    "error": "No instruction at address"
+                }
+            
+            # Get disassembly
+            disasm = self._current_view.get_disassembly(address)
+            
+            # Get raw bytes
+            raw_bytes = self._current_view.read(address, instr_len)
+            hex_bytes = raw_bytes.hex() if raw_bytes else ""
+            
+            # Get function context
+            func = self._current_view.get_function_at(address)
+            function_name = func.name if func else None
+            
+            # Get any comments
+            comment = self._current_view.get_comment_at(address)
+            
+            result = {
+                "success": True,
+                "address": hex(address),
+                "length": instr_len,
+                "disassembly": disasm,
+                "bytes": hex_bytes,
+                "function": function_name,
+                "comment": comment
+            }
+            
+            # Try to get instruction operands if available
+            try:
+                # Get instruction info using Binary Ninja's instruction API
+                instr_info = []
+                arch = self._current_view.arch
+                if arch:
+                    instr_tokens = arch.get_instruction_info(self._current_view.read(address, instr_len), address)
+                    if instr_tokens:
+                        result["instruction_info"] = {
+                            "length": instr_tokens.length,
+                            "branch_delay": instr_tokens.branch_delay if hasattr(instr_tokens, 'branch_delay') else False
+                        }
+            except:
+                pass
+            
+            return result
+            
+        except Exception as e:
+            bn.log_error(f"Error getting instruction: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
+    def get_data_type_at(self, address: int) -> Dict[str, Any]:
+        """Get data type information at a specific address.
+        
+        Args:
+            address: Address to check
+            
+        Returns:
+            Dictionary with type information
+        """
+        if not self._current_view:
+            raise RuntimeError("No binary loaded")
+            
+        try:
+            if not self._current_view.is_valid_offset(address):
+                return {
+                    "success": False,
+                    "error": f"Invalid address: {hex(address)}"
+                }
+            
+            # Get type at address
+            data_type = self._current_view.get_data_var_at(address)
+            
+            result = {
+                "success": True,
+                "address": hex(address),
+                "has_type": data_type is not None
+            }
+            
+            if data_type:
+                result.update({
+                    "type": str(data_type.type) if data_type.type else "unknown",
+                    "confidence": data_type.confidence,
+                    "auto_discovered": data_type.auto_discovered
+                })
+                
+                # Try to get the value if it's a simple type
+                try:
+                    if data_type.type and hasattr(data_type.type, 'width') and data_type.type.width <= 8:
+                        raw_value = self._current_view.read_int(address, data_type.type.width)
+                        result["value"] = raw_value
+                        result["hex_value"] = hex(raw_value)
+                except:
+                    pass
+            
+            # Check if there's a symbol at this address
+            symbol = self._current_view.get_symbol_at(address)
+            if symbol:
+                result["symbol"] = {
+                    "name": symbol.name,
+                    "type": str(symbol.type),
+                    "full_name": symbol.full_name if hasattr(symbol, 'full_name') else symbol.name
+                }
+            
+            return result
+            
+        except Exception as e:
+            bn.log_error(f"Error getting data type: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
+    def define_data_type(self, address: int, type_string: str) -> Dict[str, Any]:
+        """Define data at an address as a specific type.
+        
+        Args:
+            address: Address to define
+            type_string: Type string (e.g., "int32_t", "char[16]", "struct MyStruct")
+            
+        Returns:
+            Dictionary with operation result
+        """
+        if not self._current_view:
+            raise RuntimeError("No binary loaded")
+            
+        try:
+            if not self._current_view.is_valid_offset(address):
+                return {
+                    "success": False,
+                    "error": f"Invalid address: {hex(address)}"
+                }
+            
+            # Parse the type string
+            parsed_type, _ = self._current_view.parse_type_string(type_string)
+            if not parsed_type:
+                return {
+                    "success": False,
+                    "error": f"Failed to parse type: {type_string}"
+                }
+            
+            # Define the data variable
+            self._current_view.define_data_var(address, parsed_type)
+            
+            # Verify it was set correctly
+            data_var = self._current_view.get_data_var_at(address)
+            
+            if data_var:
+                return {
+                    "success": True,
+                    "address": hex(address),
+                    "type": str(data_var.type),
+                    "size": data_var.type.width if hasattr(data_var.type, 'width') else 0
+                }
+            else:
+                return {
+                    "success": False,
+                    "error": "Failed to define data type"
+                }
+                
+        except Exception as e:
+            bn.log_error(f"Error defining data type: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
+    # ========== IL (INTERMEDIATE LANGUAGE) ACCESS METHODS ==========
+    
+    def get_hlil_function(self, function_name: str) -> Dict[str, Any]:
+        """Get High Level IL representation of a function.
+        
+        Args:
+            function_name: Name or address of the function
+            
+        Returns:
+            Dictionary with HLIL representation and metadata
+        """
+        if not self._current_view:
+            raise RuntimeError("No binary loaded")
+            
+        try:
+            func = self.get_function_by_name_or_address(function_name)
+            if not func:
+                return {
+                    "success": False,
+                    "error": f"Function '{function_name}' not found"
+                }
+            
+            # Use hlil_if_available to avoid exceptions when IL is not ready
+            hlil = func.hlil_if_available
+            if hlil is None:
+                return {
+                    "success": False,
+                    "error": "HLIL not available for this function (may need analysis completion)"
+                }
+            instructions = []
+            
+            # Process each basic block
+            for block in hlil:
+                block_instructions = []
+                for instr in block:
+                    instr_data = {
+                        "address": hex(instr.address),
+                        "index": instr.instr_index,
+                        "operation": str(instr.operation),
+                        "text": str(instr),
+                        "size": instr.size if hasattr(instr, 'size') else 0
+                    }
+                    
+                    # Add operand information if available
+                    if hasattr(instr, 'operands'):
+                        instr_data["operands"] = [str(op) for op in instr.operands]
+                    
+                    block_instructions.append(instr_data)
+                
+                instructions.append({
+                    "block_start": hex(block.start),
+                    "block_end": hex(block.end),
+                    "instructions": block_instructions
+                })
+            
+            return {
+                "success": True,
+                "function": func.name,
+                "address": hex(func.start),
+                "hlil_instructions": instructions,
+                "instruction_count": len(hlil),
+                "basic_block_count": len(hlil.basic_blocks) if hasattr(hlil, 'basic_blocks') else 0
+            }
+            
+        except Exception as e:
+            bn.log_error(f"Error getting HLIL: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
+    def get_mlil_function(self, function_name: str) -> Dict[str, Any]:
+        """Get Medium Level IL representation of a function.
+        
+        Args:
+            function_name: Name or address of the function
+            
+        Returns:
+            Dictionary with MLIL representation and metadata
+        """
+        if not self._current_view:
+            raise RuntimeError("No binary loaded")
+            
+        try:
+            func = self.get_function_by_name_or_address(function_name)
+            if not func:
+                return {
+                    "success": False,
+                    "error": f"Function '{function_name}' not found"
+                }
+            
+            # Use mlil_if_available to avoid exceptions when IL is not ready
+            mlil = func.mlil_if_available
+            if mlil is None:
+                return {
+                    "success": False,
+                    "error": "MLIL not available for this function (may need analysis completion)"
+                }
+            instructions = []
+            
+            # Process each basic block
+            for block in mlil:
+                block_instructions = []
+                for instr in block:
+                    instr_data = {
+                        "address": hex(instr.address),
+                        "index": instr.instr_index,
+                        "operation": str(instr.operation),
+                        "text": str(instr),
+                        "size": instr.size if hasattr(instr, 'size') else 0
+                    }
+                    
+                    # Add operand information if available
+                    if hasattr(instr, 'operands'):
+                        instr_data["operands"] = [str(op) for op in instr.operands]
+                    
+                    block_instructions.append(instr_data)
+                
+                instructions.append({
+                    "block_start": hex(block.start),
+                    "block_end": hex(block.end),
+                    "instructions": block_instructions
+                })
+            
+            return {
+                "success": True,
+                "function": func.name,
+                "address": hex(func.start),
+                "mlil_instructions": instructions,
+                "instruction_count": len(mlil),
+                "basic_block_count": len(mlil.basic_blocks) if hasattr(mlil, 'basic_blocks') else 0
+            }
+            
+        except Exception as e:
+            bn.log_error(f"Error getting MLIL: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
+    def get_llil_function(self, function_name: str) -> Dict[str, Any]:
+        """Get Low Level IL representation of a function.
+        
+        Args:
+            function_name: Name or address of the function
+            
+        Returns:
+            Dictionary with LLIL representation and metadata
+        """
+        if not self._current_view:
+            raise RuntimeError("No binary loaded")
+            
+        try:
+            func = self.get_function_by_name_or_address(function_name)
+            if not func:
+                return {
+                    "success": False,
+                    "error": f"Function '{function_name}' not found"
+                }
+            
+            # Use llil_if_available to avoid exceptions when IL is not ready
+            llil = func.llil_if_available
+            if llil is None:
+                return {
+                    "success": False,
+                    "error": "LLIL not available for this function (may need analysis completion)"
+                }
+            instructions = []
+            
+            # Process each basic block
+            for block in llil:
+                block_instructions = []
+                for instr in block:
+                    instr_data = {
+                        "address": hex(instr.address),
+                        "index": instr.instr_index,
+                        "operation": str(instr.operation),
+                        "text": str(instr),
+                        "size": instr.size if hasattr(instr, 'size') else 0
+                    }
+                    
+                    # Add operand information if available
+                    if hasattr(instr, 'operands'):
+                        instr_data["operands"] = [str(op) for op in instr.operands]
+                    
+                    block_instructions.append(instr_data)
+                
+                instructions.append({
+                    "block_start": hex(block.start),
+                    "block_end": hex(block.end),
+                    "instructions": block_instructions
+                })
+            
+            return {
+                "success": True,
+                "function": func.name,
+                "address": hex(func.start),
+                "llil_instructions": instructions,
+                "instruction_count": len(llil),
+                "basic_block_count": len(llil.basic_blocks) if hasattr(llil, 'basic_blocks') else 0
+            }
+            
+        except Exception as e:
+            bn.log_error(f"Error getting LLIL: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
+    def find_il_instructions(self, function_name: str, operation_type: str, il_level: str = "hlil") -> List[Dict[str, Any]]:
+        """Find specific IL operations in a function.
+        
+        Args:
+            function_name: Name or address of the function
+            operation_type: Type of operation to find (e.g., "HLIL_CALL", "HLIL_ASSIGN")
+            il_level: IL level to search ("hlil", "mlil", "llil")
+            
+        Returns:
+            List of matching IL instructions
+        """
+        if not self._current_view:
+            raise RuntimeError("No binary loaded")
+            
+        try:
+            func = self.get_function_by_name_or_address(function_name)
+            if not func:
+                return []
+            
+            # Get the appropriate IL level using *_if_available
+            if il_level.lower() == "hlil":
+                il_func = func.hlil_if_available
+            elif il_level.lower() == "mlil":
+                il_func = func.mlil_if_available
+            elif il_level.lower() == "llil":
+                il_func = func.llil_if_available
+            else:
+                return []
+            
+            if il_func is None:
+                return []
+            
+            matching_instructions = []
+            
+            for block in il_func:
+                for instr in block:
+                    if str(instr.operation) == operation_type:
+                        instr_data = {
+                            "address": hex(instr.address),
+                            "index": instr.instr_index,
+                            "operation": str(instr.operation),
+                            "text": str(instr),
+                            "il_level": il_level.upper()
+                        }
+                        
+                        # Add operand information
+                        if hasattr(instr, 'operands'):
+                            instr_data["operands"] = [str(op) for op in instr.operands]
+                        
+                        # For calls, try to get the target
+                        if "CALL" in operation_type and hasattr(instr, 'dest'):
+                            try:
+                                if hasattr(instr.dest, 'constant'):
+                                    target_addr = instr.dest.constant
+                                    target_func = self._current_view.get_function_at(target_addr)
+                                    if target_func:
+                                        instr_data["target_function"] = target_func.name
+                                        instr_data["target_address"] = hex(target_addr)
+                            except:
+                                pass
+                        
+                        matching_instructions.append(instr_data)
+            
+            return matching_instructions
+            
+        except Exception as e:
+            bn.log_error(f"Error finding IL instructions: {e}")
+            return []
+
+    # ========== BASIC BLOCK & CONTROL FLOW ANALYSIS METHODS ==========
+    
+    def get_basic_blocks(self, function_name: str) -> Dict[str, Any]:
+        """Get basic blocks information for a function.
+        
+        Args:
+            function_name: Name or address of the function
+            
+        Returns:
+            Dictionary with basic blocks information
+        """
+        if not self._current_view:
+            raise RuntimeError("No binary loaded")
+            
+        try:
+            func = self.get_function_by_name_or_address(function_name)
+            if not func:
+                return {
+                    "success": False,
+                    "error": f"Function '{function_name}' not found"
+                }
+            
+            blocks = []
+            for i, block in enumerate(func.basic_blocks):
+                block_info = {
+                    "index": i,
+                    "start": hex(block.start),
+                    "end": hex(block.end),
+                    "length": block.end - block.start,
+                    "instruction_count": len(block)
+                }
+                
+                # Get outgoing edges
+                outgoing_edges = []
+                for edge in block.outgoing_edges:
+                    edge_info = {
+                        "target": hex(edge.target.start),
+                        "type": str(edge.type) if hasattr(edge, 'type') else "unknown"
+                    }
+                    outgoing_edges.append(edge_info)
+                
+                block_info["outgoing_edges"] = outgoing_edges
+                
+                # Get incoming edges
+                incoming_edges = []
+                for edge in block.incoming_edges:
+                    edge_info = {
+                        "source": hex(edge.source.start),
+                        "type": str(edge.type) if hasattr(edge, 'type') else "unknown"
+                    }
+                    incoming_edges.append(edge_info)
+                
+                block_info["incoming_edges"] = incoming_edges
+                
+                # Check if this is a terminal block
+                block_info["is_terminal"] = len(outgoing_edges) == 0
+                
+                blocks.append(block_info)
+            
+            return {
+                "success": True,
+                "function": func.name,
+                "address": hex(func.start),
+                "basic_blocks": blocks,
+                "block_count": len(blocks)
+            }
+            
+        except Exception as e:
+            bn.log_error(f"Error getting basic blocks: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
+    def get_control_flow_graph(self, function_name: str) -> Dict[str, Any]:
+        """Get control flow graph information for a function.
+        
+        Args:
+            function_name: Name or address of the function
+            
+        Returns:
+            Dictionary with CFG information
+        """
+        if not self._current_view:
+            raise RuntimeError("No binary loaded")
+            
+        try:
+            func = self.get_function_by_name_or_address(function_name)
+            if not func:
+                return {
+                    "success": False,
+                    "error": f"Function '{function_name}' not found"
+                }
+            
+            # Build CFG representation
+            nodes = []
+            edges = []
+            
+            # Create nodes (basic blocks)
+            block_map = {}
+            for i, block in enumerate(func.basic_blocks):
+                node_id = f"bb_{i}"
+                block_map[block.start] = node_id
+                
+                node = {
+                    "id": node_id,
+                    "start": hex(block.start),
+                    "end": hex(block.end),
+                    "length": block.end - block.start,
+                    "instruction_count": len(block)
+                }
+                nodes.append(node)
+            
+            # Create edges
+            for i, block in enumerate(func.basic_blocks):
+                source_id = f"bb_{i}"
+                for edge in block.outgoing_edges:
+                    target_start = edge.target.start
+                    if target_start in block_map:
+                        target_id = block_map[target_start]
+                        edge_info = {
+                            "source": source_id,
+                            "target": target_id,
+                            "type": str(edge.type) if hasattr(edge, 'type') else "unknown"
+                        }
+                        edges.append(edge_info)
+            
+            # Identify special blocks
+            entry_blocks = [node for node in nodes if node["id"] == "bb_0"]
+            terminal_blocks = []
+            
+            for node in nodes:
+                # Check if this node has no outgoing edges
+                has_outgoing = any(edge["source"] == node["id"] for edge in edges)
+                if not has_outgoing:
+                    terminal_blocks.append(node)
+            
+            return {
+                "success": True,
+                "function": func.name,
+                "address": hex(func.start),
+                "nodes": nodes,
+                "edges": edges,
+                "entry_blocks": entry_blocks,
+                "terminal_blocks": terminal_blocks,
+                "complexity": len(edges) - len(nodes) + 2  # Cyclomatic complexity
+            }
+            
+        except Exception as e:
+            bn.log_error(f"Error getting CFG: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
+    def find_loops(self, function_name: str) -> Dict[str, Any]:
+        """Identify loop structures in a function.
+        
+        Args:
+            function_name: Name or address of the function
+            
+        Returns:
+            Dictionary with loop information
+        """
+        if not self._current_view:
+            raise RuntimeError("No binary loaded")
+            
+        try:
+            func = self.get_function_by_name_or_address(function_name)
+            if not func:
+                return {
+                    "success": False,
+                    "error": f"Function '{function_name}' not found"
+                }
+            
+            loops = []
+            
+            # Simple loop detection: look for back edges
+            # A back edge is an edge from a block to a block that dominates it
+            for block in func.basic_blocks:
+                for edge in block.outgoing_edges:
+                    target = edge.target
+                    
+                    # Check if target dominates source (simple heuristic: target comes before source)
+                    if target.start <= block.start:
+                        # Potential loop found
+                        loop_info = {
+                            "header": hex(target.start),
+                            "latch": hex(block.start),
+                            "type": "back_edge_detected"
+                        }
+                        
+                        # Try to find loop body by collecting blocks between header and latch
+                        body_blocks = []
+                        for body_block in func.basic_blocks:
+                            if target.start <= body_block.start <= block.end:
+                                body_blocks.append(hex(body_block.start))
+                        
+                        loop_info["body_blocks"] = body_blocks
+                        loop_info["estimated_size"] = len(body_blocks)
+                        
+                        loops.append(loop_info)
+            
+            return {
+                "success": True,
+                "function": func.name,
+                "address": hex(func.start),
+                "loops": loops,
+                "loop_count": len(loops)
+            }
+            
+        except Exception as e:
+            bn.log_error(f"Error finding loops: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
+    def get_dominance_tree(self, function_name: str) -> Dict[str, Any]:
+        """Get dominance tree information for a function.
+        
+        Args:
+            function_name: Name or address of the function
+            
+        Returns:
+            Dictionary with dominance information
+        """
+        if not self._current_view:
+            raise RuntimeError("No binary loaded")
+            
+        try:
+            func = self.get_function_by_name_or_address(function_name)
+            if not func:
+                return {
+                    "success": False,
+                    "error": f"Function '{function_name}' not found"
+                }
+            
+            dominance_info = []
+            
+            # Simple dominance analysis
+            # A block A dominates block B if all paths from entry to B go through A
+            blocks = list(func.basic_blocks)
+            
+            for i, block in enumerate(blocks):
+                dominated_blocks = []
+                
+                # Check which blocks this block dominates
+                for j, other_block in enumerate(blocks):
+                    if i != j:
+                        # Simple heuristic: if block comes before other_block in sequence
+                        # and there's a path between them, it might dominate
+                        if block.start < other_block.start:
+                            # Check if there's a path
+                            has_path = False
+                            for edge in block.outgoing_edges:
+                                if edge.target.start <= other_block.start:
+                                    has_path = True
+                                    break
+                            
+                            if has_path:
+                                dominated_blocks.append(hex(other_block.start))
+                
+                dom_info = {
+                    "block": hex(block.start),
+                    "dominated_blocks": dominated_blocks,
+                    "dominance_count": len(dominated_blocks)
+                }
+                dominance_info.append(dom_info)
+            
+            return {
+                "success": True,
+                "function": func.name,
+                "address": hex(func.start),
+                "dominance_info": dominance_info,
+                "note": "Simplified dominance analysis - not a full dominator tree"
+            }
+            
+        except Exception as e:
+            bn.log_error(f"Error getting dominance tree: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
+    # ========== SEARCH & PATTERN MATCHING METHODS ==========
+    
+    def search_bytes(self, pattern: str, mask: str = None) -> List[Dict[str, Any]]:
+        """Search for byte patterns in the binary.
+        
+        Args:
+            pattern: Hex string pattern to search for (e.g., "41424344")
+            mask: Optional mask string (e.g., "FFFF00FF") to ignore certain bytes
+            
+        Returns:
+            List of matches with addresses and context
+        """
+        if not self._current_view:
+            raise RuntimeError("No binary loaded")
+            
+        try:
+            # Convert pattern to bytes
+            if pattern.startswith("0x"):
+                pattern = pattern[2:]
+            
+            try:
+                pattern_bytes = bytes.fromhex(pattern)
+            except ValueError:
+                return []
+            
+            # Convert mask if provided
+            mask_bytes = None
+            if mask:
+                if mask.startswith("0x"):
+                    mask = mask[2:]
+                try:
+                    mask_bytes = bytes.fromhex(mask)
+                    if len(mask_bytes) != len(pattern_bytes):
+                        mask_bytes = None
+                except ValueError:
+                    mask_bytes = None
+            
+            matches = []
+            
+            # Search through all segments
+            for segment in self._current_view.segments:
+                if segment.readable:
+                    start_addr = segment.start
+                    end_addr = segment.end
+                    
+                    # Read segment data
+                    segment_data = self._current_view.read(start_addr, end_addr - start_addr)
+                    if not segment_data:
+                        continue
+                    
+                    # Search for pattern
+                    for i in range(len(segment_data) - len(pattern_bytes) + 1):
+                        match_found = True
+                        
+                        for j in range(len(pattern_bytes)):
+                            if mask_bytes:
+                                # Apply mask
+                                if (segment_data[i + j] & mask_bytes[j]) != (pattern_bytes[j] & mask_bytes[j]):
+                                    match_found = False
+                                    break
+                            else:
+                                # Exact match
+                                if segment_data[i + j] != pattern_bytes[j]:
+                                    match_found = False
+                                    break
+                        
+                        if match_found:
+                            match_addr = start_addr + i
+                            
+                            # Get context
+                            func = self._current_view.get_function_at(match_addr)
+                            symbol = self._current_view.get_symbol_at(match_addr)
+                            
+                            match_info = {
+                                "address": hex(match_addr),
+                                "segment": segment.name if hasattr(segment, 'name') else "unknown",
+                                "function": func.name if func else None,
+                                "symbol": symbol.name if symbol else None,
+                                "pattern": pattern,
+                                "matched_bytes": segment_data[i:i+len(pattern_bytes)].hex()
+                            }
+                            
+                            matches.append(match_info)
+            
+            return matches
+            
+        except Exception as e:
+            bn.log_error(f"Error searching bytes: {e}")
+            return []
+
+    def find_immediate_values(self, value: int, size: int = None) -> List[Dict[str, Any]]:
+        """Find immediate values in instructions.
+        
+        Args:
+            value: Value to search for
+            size: Optional size constraint (1, 2, 4, 8 bytes)
+            
+        Returns:
+            List of locations where the immediate value is used
+        """
+        if not self._current_view:
+            raise RuntimeError("No binary loaded")
+            
+        try:
+            matches = []
+            
+            # Convert value to different representations
+            hex_value = hex(value)
+            
+            # Search through all functions
+            for func in self._current_view.functions:
+                try:
+                    # Check each basic block
+                    for block in func.basic_blocks:
+                        addr = block.start
+                        while addr < block.end:
+                            try:
+                                # Get instruction
+                                instr_len = self._current_view.get_instruction_length(addr)
+                                if instr_len <= 0:
+                                    addr += 1
+                                    continue
+                                
+                                # Get disassembly
+                                disasm = self._current_view.get_disassembly(addr)
+                                if not disasm:
+                                    addr += instr_len
+                                    continue
+                                
+                                # Check if our value appears in the instruction
+                                if (hex_value in disasm or 
+                                    str(value) in disasm or 
+                                    f"0x{value:x}" in disasm):
+                                    
+                                    match_info = {
+                                        "address": hex(addr),
+                                        "function": func.name,
+                                        "instruction": disasm,
+                                        "value": value,
+                                        "hex_value": hex_value
+                                    }
+                                    
+                                    # Try to get more context
+                                    comment = self._current_view.get_comment_at(addr)
+                                    if comment:
+                                        match_info["comment"] = comment
+                                    
+                                    matches.append(match_info)
+                                
+                                addr += instr_len
+                                
+                            except Exception:
+                                addr += 1
+                                
+                except Exception as e:
+                    bn.log_error(f"Error processing function {func.name}: {e}")
+                    continue
+            
+            return matches
+            
+        except Exception as e:
+            bn.log_error(f"Error finding immediate values: {e}")
+            return []
+
+    def search_instructions(self, mnemonic: str, operand_pattern: str = None) -> List[Dict[str, Any]]:
+        """Search for specific instruction patterns.
+        
+        Args:
+            mnemonic: Instruction mnemonic to search for (e.g., "call", "mov")
+            operand_pattern: Optional operand pattern to match
+            
+        Returns:
+            List of matching instructions
+        """
+        if not self._current_view:
+            raise RuntimeError("No binary loaded")
+            
+        try:
+            matches = []
+            mnemonic_lower = mnemonic.lower()
+            
+            # Search through all functions
+            for func in self._current_view.functions:
+                try:
+                    for block in func.basic_blocks:
+                        addr = block.start
+                        while addr < block.end:
+                            try:
+                                instr_len = self._current_view.get_instruction_length(addr)
+                                if instr_len <= 0:
+                                    addr += 1
+                                    continue
+                                
+                                disasm = self._current_view.get_disassembly(addr)
+                                if not disasm:
+                                    addr += instr_len
+                                    continue
+                                
+                                disasm_lower = disasm.lower()
+                                
+                                # Check if mnemonic matches
+                                if disasm_lower.startswith(mnemonic_lower):
+                                    # If operand pattern specified, check it too
+                                    if operand_pattern:
+                                        if operand_pattern.lower() not in disasm_lower:
+                                            addr += instr_len
+                                            continue
+                                    
+                                    match_info = {
+                                        "address": hex(addr),
+                                        "function": func.name,
+                                        "instruction": disasm,
+                                        "mnemonic": mnemonic
+                                    }
+                                    
+                                    if operand_pattern:
+                                        match_info["operand_pattern"] = operand_pattern
+                                    
+                                    # Get instruction bytes
+                                    raw_bytes = self._current_view.read(addr, instr_len)
+                                    if raw_bytes:
+                                        match_info["bytes"] = raw_bytes.hex()
+                                    
+                                    matches.append(match_info)
+                                
+                                addr += instr_len
+                                
+                            except Exception:
+                                addr += 1
+                                
+                except Exception as e:
+                    bn.log_error(f"Error processing function {func.name}: {e}")
+                    continue
+            
+            return matches
+            
+        except Exception as e:
+            bn.log_error(f"Error searching instructions: {e}")
+            return []
+
+    def find_apis_by_pattern(self, pattern: str) -> List[Dict[str, Any]]:
+        """Find API calls matching a pattern.
+        
+        Args:
+            pattern: Pattern to match against API names (case insensitive)
+            
+        Returns:
+            List of API call locations
+        """
+        if not self._current_view:
+            raise RuntimeError("No binary loaded")
+            
+        try:
+            api_calls = []
+            pattern_lower = pattern.lower()
+            
+            # Get all imported functions
+            for symbol in self._current_view.get_symbols_of_type(bn.SymbolType.ImportedFunctionSymbol):
+                if pattern_lower in symbol.name.lower():
+                    # Find all references to this API
+                    for ref in self._current_view.get_code_refs(symbol.address):
+                        if ref.function:
+                            api_info = {
+                                "api_name": symbol.name,
+                                "api_address": hex(symbol.address),
+                                "call_address": hex(ref.address),
+                                "function": ref.function.name,
+                                "pattern_matched": pattern
+                            }
+                            
+                            # Get the calling instruction
+                            try:
+                                disasm = self._current_view.get_disassembly(ref.address)
+                                if disasm:
+                                    api_info["instruction"] = disasm
+                            except:
+                                pass
+                            
+                            api_calls.append(api_info)
+            
+            return api_calls
+            
+        except Exception as e:
+            bn.log_error(f"Error finding APIs: {e}")
+            return []
+
+    # ========== ANALYSIS CONTROL METHODS ==========
+    
+    def run_analysis(self, analysis_type: str = "auto") -> Dict[str, Any]:
+        """Run or control Binary Ninja analysis.
+        
+        Args:
+            analysis_type: Type of analysis to run ("auto", "linear", "full")
+            
+        Returns:
+            Dictionary with analysis status
+        """
+        if not self._current_view:
+            raise RuntimeError("No binary loaded")
+            
+        try:
+            if analysis_type == "auto":
+                # Run automatic analysis (this is usually done by default)
+                self._current_view.update_analysis_and_wait()
+            elif analysis_type == "linear":
+                # Run linear analysis on entire binary
+                self._current_view.create_user_function(self._current_view.start)
+            elif analysis_type == "full":
+                # Force full analysis
+                self._current_view.update_analysis_and_wait()
+                
+                # Analyze all functions
+                for func in self._current_view.functions:
+                    func.reanalyze()
+                
+                self._current_view.update_analysis_and_wait()
+            else:
+                return {
+                    "success": False,
+                    "error": f"Unknown analysis type: {analysis_type}"
+                }
+            
+            return {
+                "success": True,
+                "analysis_type": analysis_type,
+                "function_count": len(self._current_view.functions),
+                "status": "Analysis completed"
+            }
+            
+        except Exception as e:
+            bn.log_error(f"Error running analysis: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
+    def analyze_function(self, function_name: str) -> Dict[str, Any]:
+        """Force reanalysis of a specific function.
+        
+        Args:
+            function_name: Name or address of function to reanalyze
+            
+        Returns:
+            Dictionary with analysis result
+        """
+        if not self._current_view:
+            raise RuntimeError("No binary loaded")
+            
+        try:
+            func = self.get_function_by_name_or_address(function_name)
+            if not func:
+                return {
+                    "success": False,
+                    "error": f"Function '{function_name}' not found"
+                }
+            
+            # Force reanalysis
+            func.reanalyze()
+            self._current_view.update_analysis_and_wait()
+            
+            return {
+                "success": True,
+                "function": func.name,
+                "address": hex(func.start),
+                "basic_blocks": len(func.basic_blocks),
+                "status": "Function reanalyzed"
+            }
+            
+        except Exception as e:
+            bn.log_error(f"Error analyzing function: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
+    def create_function_at(self, address: int) -> Dict[str, Any]:
+        """Create a function at the specified address.
+        
+        Args:
+            address: Address where to create the function
+            
+        Returns:
+            Dictionary with creation result
+        """
+        if not self._current_view:
+            raise RuntimeError("No binary loaded")
+            
+        try:
+            if not self._current_view.is_valid_offset(address):
+                return {
+                    "success": False,
+                    "error": f"Invalid address: {hex(address)}"
+                }
+            
+            # Check if function already exists
+            existing_func = self._current_view.get_function_at(address)
+            if existing_func:
+                return {
+                    "success": False,
+                    "error": f"Function already exists at {hex(address)}: {existing_func.name}"
+                }
+            
+            # Create the function
+            new_func = self._current_view.create_user_function(address)
+            if new_func:
+                return {
+                    "success": True,
+                    "function": new_func.name,
+                    "address": hex(address),
+                    "status": "Function created successfully"
+                }
+            else:
+                return {
+                    "success": False,
+                    "error": "Failed to create function (may not be valid code)"
+                }
+            
+        except Exception as e:
+            bn.log_error(f"Error creating function: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
+    def undefine_function(self, function_name: str) -> Dict[str, Any]:
+        """Remove a function definition.
+        
+        Args:
+            function_name: Name or address of function to undefine
+            
+        Returns:
+            Dictionary with operation result
+        """
+        if not self._current_view:
+            raise RuntimeError("No binary loaded")
+            
+        try:
+            func = self.get_function_by_name_or_address(function_name)
+            if not func:
+                return {
+                    "success": False,
+                    "error": f"Function '{function_name}' not found"
+                }
+            
+            func_name = func.name
+            func_addr = hex(func.start)
+            
+            # Remove the function
+            self._current_view.remove_user_function(func)
+            
+            return {
+                "success": True,
+                "function": func_name,
+                "address": func_addr,
+                "status": "Function undefined successfully"
+            }
+            
+        except Exception as e:
+            bn.log_error(f"Error undefining function: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
+    def get_analysis_info(self) -> Dict[str, Any]:
+        """Get information about the current analysis state.
+        
+        Returns:
+            Dictionary with analysis information
+        """
+        if not self._current_view:
+            raise RuntimeError("No binary loaded")
+            
+        try:
+            info = {
+                "binary_file": self._current_view.file.filename if self._current_view.file else None,
+                "architecture": str(self._current_view.arch) if self._current_view.arch else None,
+                "platform": str(self._current_view.platform) if self._current_view.platform else None,
+                "entry_point": hex(self._current_view.entry_point) if self._current_view.entry_point else None,
+                "function_count": len(self._current_view.functions),
+                "segment_count": len(self._current_view.segments),
+                "analysis_progress": {
+                    "state": "complete" if len(self._current_view.functions) > 0 else "pending",
+                    "functions_analyzed": len(self._current_view.functions)
+                }
+            }
+            
+            # Get basic statistics
+            total_instructions = 0
+            total_basic_blocks = 0
+            
+            for func in self._current_view.functions:
+                total_basic_blocks += len(func.basic_blocks)
+                for block in func.basic_blocks:
+                    total_instructions += len(block)
+            
+            info["statistics"] = {
+                "total_basic_blocks": total_basic_blocks,
+                "total_instructions": total_instructions,
+                "average_blocks_per_function": total_basic_blocks / len(self._current_view.functions) if self._current_view.functions else 0
+            }
+            
+            return info
+            
+        except Exception as e:
+            bn.log_error(f"Error getting analysis info: {e}")
+            return {
+                "error": str(e)
+            }
+
+    def get_file_metadata(self) -> Dict[str, Any]:
+        """Get comprehensive file metadata information.
+        
+        Returns:
+            Dictionary with complete file metadata including file info, 
+            binary properties, architecture details, and checksums
+        """
+        if not self._current_view:
+            raise RuntimeError("No binary loaded")
+            
+        try:
+            metadata = {}
+            
+            # File information
+            if self._current_view.file:
+                file_info = {
+                    "filename": self._current_view.file.filename,
+                    "original_filename": self._current_view.file.original_filename,
+                    "modified": self._current_view.file.modified,
+                    "has_database": self._current_view.file.has_database,
+                }
+                
+                # Get file size if available
+                import os
+                try:
+                    if os.path.exists(self._current_view.file.original_filename):
+                        file_info["file_size"] = os.path.getsize(self._current_view.file.original_filename)
+                        
+                        # Get file timestamps
+                        stat = os.stat(self._current_view.file.original_filename)
+                        file_info["created_time"] = stat.st_ctime
+                        file_info["modified_time"] = stat.st_mtime
+                        file_info["accessed_time"] = stat.st_atime
+                except (OSError, IOError):
+                    pass
+                    
+                metadata["file"] = file_info
+            
+            # Binary view properties
+            binary_info = {
+                "start_offset": hex(self._current_view.start),
+                "end_offset": hex(self._current_view.end),
+                "length": self._current_view.end - self._current_view.start,
+                "view_type": str(self._current_view.view_type) if hasattr(self._current_view, 'view_type') else None,
+            }
+            
+            # Architecture information
+            if self._current_view.arch:
+                arch_info = {
+                    "name": str(self._current_view.arch),
+                    "endianness": str(self._current_view.endianness),
+                }
+                
+                # Safely add architecture properties that might exist
+                try:
+                    if hasattr(self._current_view.arch, 'address_size'):
+                        arch_info["address_size"] = self._current_view.arch.address_size
+                    if hasattr(self._current_view.arch, 'max_instr_length'):
+                        arch_info["max_instruction_length"] = self._current_view.arch.max_instr_length
+                except:
+                    pass
+                    
+                metadata["architecture"] = arch_info
+            
+            # Platform information
+            if self._current_view.platform:
+                platform_info = {
+                    "name": str(self._current_view.platform),
+                }
+                
+                # Safely add platform properties
+                try:
+                    if hasattr(self._current_view.platform, 'calling_conventions'):
+                        platform_info["calling_conventions"] = [str(cc) for cc in self._current_view.platform.calling_conventions]
+                    if hasattr(self._current_view.platform, 'system_call_convention') and self._current_view.platform.system_call_convention:
+                        platform_info["system_call_convention"] = str(self._current_view.platform.system_call_convention)
+                except:
+                    pass
+                    
+                metadata["platform"] = platform_info
+            
+            # Entry point information
+            if self._current_view.entry_point:
+                entry_info = {
+                    "address": hex(self._current_view.entry_point),
+                    "function_name": None
+                }
+                
+                # Try to get entry function name
+                entry_func = self._current_view.get_function_at(self._current_view.entry_point)
+                if entry_func:
+                    entry_info["function_name"] = entry_func.name
+                    
+                metadata["entry_point"] = entry_info
+            
+            # Segment information
+            segments_info = []
+            try:
+                for segment in self._current_view.segments:
+                    try:
+                        seg_info = {
+                            "start": hex(segment.start),
+                            "end": hex(segment.end),
+                            "length": segment.end - segment.start,
+                            "data_length": segment.data_length,
+                            "executable": segment.executable,
+                            "readable": segment.readable,
+                            "writable": segment.writable,
+                        }
+                        segments_info.append(seg_info)
+                    except Exception:
+                        # Skip malformed segments
+                        continue
+            except Exception:
+                pass
+            metadata["segments"] = segments_info
+            
+            # Section information
+            sections_info = []
+            try:
+                for section in self._current_view.sections.values():
+                    try:
+                        sect_info = {
+                            "name": section.name,
+                            "start": hex(section.start),
+                            "end": hex(section.end),
+                            "length": section.end - section.start,
+                            "type": section.type,
+                        }
+                        sections_info.append(sect_info)
+                    except Exception:
+                        # Skip malformed sections
+                        continue
+            except Exception:
+                pass
+            metadata["sections"] = sections_info
+            
+            # Import/Export information
+            try:
+                metadata["imports"] = [str(sym) for sym in self._current_view.get_symbols_of_type(bn.SymbolType.ImportedFunctionSymbol)]
+            except Exception:
+                metadata["imports"] = []
+            
+            try:
+                metadata["exports"] = [str(sym) for sym in self._current_view.get_symbols_of_type(bn.SymbolType.ExportedFunctionSymbol)]
+            except Exception:
+                metadata["exports"] = []
+            
+            # Basic statistics
+            stats = {
+                "function_count": len(self._current_view.functions),
+                "symbol_count": len(self._current_view.symbols),
+                "string_count": len(self._current_view.strings),
+                "data_variable_count": len(self._current_view.data_vars),
+            }
+            metadata["statistics"] = stats
+            
+            # Add the binary_info to metadata
+            metadata["binary"] = binary_info
+            
+            return metadata
+            
+        except Exception as e:
+            bn.log_error(f"Error getting file metadata: {e}")
+            return {
+                "error": str(e)
+            }

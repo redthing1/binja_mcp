@@ -103,6 +103,73 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
             return False
         return True
 
+    def _validate_string_param(self, param: str, param_name: str, max_length: int = 1000) -> bool:
+        """Validate string parameters for security and length.
+        
+        Args:
+            param: Parameter value to validate
+            param_name: Name of the parameter for error messages
+            max_length: Maximum allowed length
+            
+        Returns:
+            True if valid, False otherwise (and sends error response)
+        """
+        if not param:
+            self._send_json_response({"error": f"Missing {param_name} parameter"}, 400)
+            return False
+            
+        if len(param) > max_length:
+            self._send_json_response({
+                "error": f"{param_name} parameter too long (max {max_length} characters)"
+            }, 400)
+            return False
+            
+        # Basic security check - prevent obvious injection attempts
+        dangerous_chars = ['<', '>', '"', "'", '&', '\0', '\n', '\r']
+        if any(char in param for char in dangerous_chars):
+            self._send_json_response({
+                "error": f"{param_name} parameter contains invalid characters"
+            }, 400)
+            return False
+            
+        return True
+
+    def _validate_address_param(self, address: str, param_name: str = "address") -> tuple:
+        """Validate and parse address parameter.
+        
+        Args:
+            address: Address string to validate
+            param_name: Name of the parameter for error messages
+            
+        Returns:
+            Tuple of (is_valid: bool, parsed_address: int or None)
+        """
+        if not address:
+            self._send_json_response({"error": f"Missing {param_name} parameter"}, 400)
+            return False, None
+            
+        try:
+            # Parse hex or decimal address
+            if address.startswith("0x") or address.startswith("0X"):
+                addr = int(address, 16)
+            else:
+                addr = int(address)
+                
+            # Basic range validation - addresses should be reasonable
+            if addr < 0 or addr > 0xFFFFFFFFFFFFFFFF:  # 64-bit max
+                self._send_json_response({
+                    "error": f"Invalid {param_name} range: {address}"
+                }, 400)
+                return False, None
+                
+            return True, addr
+            
+        except ValueError:
+            self._send_json_response({
+                "error": f"Invalid {param_name} format: {address}"
+            }, 400)
+            return False, None
+
     def do_GET(self):
         try:
             # For all endpoints except /status, check if binary is loaded
@@ -739,6 +806,400 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
                         {"error": str(e)},
                         500,
                     )
+            # ========== STRING ANALYSIS ENDPOINTS ==========
+            elif path == "/strings":
+                min_length = parse_int_or_default(params.get("minLength"), 4)
+                encoding = params.get("encoding", "utf-8")
+                strings = self.binary_ops.get_strings(min_length, encoding, offset, limit)
+                self._send_json_response({"strings": strings})
+
+            elif path == "/searchStrings":
+                pattern = params.get("pattern", "")
+                if not pattern:
+                    self._send_json_response(
+                        {"error": "Missing pattern parameter"}, 400
+                    )
+                    return
+                
+                regex = params.get("regex", "false").lower() == "true"
+                case_sensitive = params.get("caseSensitive", "false").lower() == "true"
+                matches = self.binary_ops.search_strings(pattern, regex, case_sensitive, offset, limit)
+                self._send_json_response({"matches": matches})
+
+            elif path == "/stringReferences":
+                string_address = params.get("address")
+                if not string_address:
+                    self._send_json_response(
+                        {"error": "Missing address parameter"}, 400
+                    )
+                    return
+                
+                try:
+                    addr = int(string_address, 16) if string_address.startswith("0x") else int(string_address)
+                    references = self.binary_ops.get_string_references(addr)
+                    self._send_json_response({"references": references})
+                except ValueError:
+                    self._send_json_response({"error": "Invalid address format"}, 400)
+
+            elif path == "/analyzeStringUsage":
+                stats = self.binary_ops.analyze_string_usage()
+                self._send_json_response({"statistics": stats})
+
+            # ========== TAG MANAGEMENT ENDPOINTS ==========
+            elif path == "/tagTypes":
+                tag_types = self.binary_ops.get_tag_types()
+                self._send_json_response({"tag_types": tag_types})
+
+            elif path == "/tags":
+                tag_type_name = params.get("tagType")
+                tags = self.binary_ops.get_tags(tag_type_name, offset, limit)
+                self._send_json_response({"tags": tags})
+
+            elif path == "/tagsAtAddress":
+                address = params.get("address")
+                if not address:
+                    self._send_json_response(
+                        {"error": "Missing address parameter"}, 400
+                    )
+                    return
+                
+                try:
+                    addr = int(address, 16) if address.startswith("0x") else int(address)
+                    tags = self.binary_ops.get_tags_at_address(addr)
+                    self._send_json_response({"tags": tags})
+                except ValueError:
+                    self._send_json_response({"error": "Invalid address format"}, 400)
+
+            elif path == "/searchTags":
+                query = params.get("query", "")
+                if not query:
+                    self._send_json_response(
+                        {"error": "Missing query parameter"}, 400
+                    )
+                    return
+                
+                matching_tags = self.binary_ops.search_tags(query)
+                self._send_json_response({"matches": matching_tags})
+
+            # ========== ENHANCED CROSS-REFERENCE ENDPOINTS ==========
+            elif path == "/allReferencesTo":
+                address = params.get("address")
+                if not address:
+                    self._send_json_response(
+                        {"error": "Missing address parameter"}, 400
+                    )
+                    return
+                
+                try:
+                    addr = int(address, 16) if address.startswith("0x") else int(address)
+                    references = self.binary_ops.get_all_references_to(addr)
+                    self._send_json_response({"references": references})
+                except ValueError:
+                    self._send_json_response({"error": "Invalid address format"}, 400)
+
+            elif path == "/allReferencesFrom":
+                address = params.get("address")
+                if not address:
+                    self._send_json_response(
+                        {"error": "Missing address parameter"}, 400
+                    )
+                    return
+                
+                try:
+                    addr = int(address, 16) if address.startswith("0x") else int(address)
+                    references = self.binary_ops.get_all_references_from(addr)
+                    self._send_json_response({"references": references})
+                except ValueError:
+                    self._send_json_response({"error": "Invalid address format"}, 400)
+
+            elif path == "/findConstantUsage":
+                value = params.get("value")
+                if not value:
+                    self._send_json_response(
+                        {"error": "Missing value parameter"}, 400
+                    )
+                    return
+                
+                try:
+                    const_value = int(value, 16) if value.startswith("0x") else int(value)
+                    size = parse_int_or_default(params.get("size"), None)
+                    usage = self.binary_ops.find_constant_usage(const_value, size)
+                    self._send_json_response({"usage": usage})
+                except ValueError:
+                    self._send_json_response({"error": "Invalid value format"}, 400)
+
+            elif path == "/callGraph":
+                function_name = params.get("functionName")
+                if not function_name:
+                    self._send_json_response(
+                        {"error": "Missing functionName parameter"}, 400
+                    )
+                    return
+                
+                depth = parse_int_or_default(params.get("depth"), 2)
+                direction = params.get("direction", "both")
+                call_graph = self.binary_ops.get_call_graph(function_name, depth, direction)
+                self._send_json_response({"call_graph": call_graph})
+
+            elif path == "/functionCallers":
+                function_name = params.get("functionName")
+                if not function_name:
+                    self._send_json_response(
+                        {"error": "Missing functionName parameter"}, 400
+                    )
+                    return
+                
+                recursive = params.get("recursive", "false").lower() == "true"
+                callers = self.binary_ops.find_function_callers(function_name, recursive)
+                self._send_json_response({"callers": callers})
+
+            elif path == "/crossReferencesSummary":
+                summary = self.binary_ops.analyze_cross_references_summary()
+                self._send_json_response({"summary": summary})
+
+            # ========== MEMORY & DATA ANALYSIS ENDPOINTS ==========
+            elif path == "/readBytes":
+                address = params.get("address")
+                length = params.get("length")
+                if not address or not length:
+                    self._send_json_response(
+                        {"error": "Missing required parameters: address and length"}, 400
+                    )
+                    return
+                
+                try:
+                    addr = int(address, 16) if address.startswith("0x") else int(address)
+                    length_int = int(length)
+                    result = self.binary_ops.read_bytes(addr, length_int)
+                    self._send_json_response(result)
+                except ValueError:
+                    self._send_json_response({"error": "Invalid address or length format"}, 400)
+
+            elif path == "/getInstruction":
+                address = params.get("address")
+                if not address:
+                    self._send_json_response(
+                        {"error": "Missing address parameter"}, 400
+                    )
+                    return
+                
+                try:
+                    addr = int(address, 16) if address.startswith("0x") else int(address)
+                    result = self.binary_ops.get_instruction_at(addr)
+                    self._send_json_response(result)
+                except ValueError:
+                    self._send_json_response({"error": "Invalid address format"}, 400)
+
+            # ========== IL ACCESS ENDPOINTS ==========
+            elif path == "/hlilFunction":
+                function_name = params.get("functionName")
+                if not function_name:
+                    self._send_json_response(
+                        {"error": "Missing functionName parameter"}, 400
+                    )
+                    return
+                
+                result = self.binary_ops.get_hlil_function(function_name)
+                self._send_json_response(result)
+
+            elif path == "/mlilFunction":
+                function_name = params.get("functionName")
+                if not function_name:
+                    self._send_json_response(
+                        {"error": "Missing functionName parameter"}, 400
+                    )
+                    return
+                
+                result = self.binary_ops.get_mlil_function(function_name)
+                self._send_json_response(result)
+
+            elif path == "/llilFunction":
+                function_name = params.get("functionName")
+                if not function_name:
+                    self._send_json_response(
+                        {"error": "Missing functionName parameter"}, 400
+                    )
+                    return
+                
+                result = self.binary_ops.get_llil_function(function_name)
+                self._send_json_response(result)
+
+            elif path == "/findILInstructions":
+                function_name = params.get("functionName")
+                operation_type = params.get("operationType")
+                if not function_name or not operation_type:
+                    self._send_json_response(
+                        {"error": "Missing required parameters: functionName and operationType"}, 400
+                    )
+                    return
+                
+                il_level = params.get("ilLevel", "hlil")
+                result = self.binary_ops.find_il_instructions(function_name, operation_type, il_level)
+                self._send_json_response({"instructions": result})
+
+            # ========== CONTROL FLOW ANALYSIS ENDPOINTS ==========
+            elif path == "/basicBlocks":
+                function_name = params.get("functionName")
+                if not function_name:
+                    self._send_json_response(
+                        {"error": "Missing functionName parameter"}, 400
+                    )
+                    return
+                
+                result = self.binary_ops.get_basic_blocks(function_name)
+                self._send_json_response(result)
+
+            elif path == "/controlFlowGraph":
+                function_name = params.get("functionName")
+                if not function_name:
+                    self._send_json_response(
+                        {"error": "Missing functionName parameter"}, 400
+                    )
+                    return
+                
+                result = self.binary_ops.get_control_flow_graph(function_name)
+                self._send_json_response(result)
+
+            elif path == "/findLoops":
+                function_name = params.get("functionName")
+                if not function_name:
+                    self._send_json_response(
+                        {"error": "Missing functionName parameter"}, 400
+                    )
+                    return
+                
+                result = self.binary_ops.find_loops(function_name)
+                self._send_json_response(result)
+
+            # ========== SEARCH & PATTERN MATCHING ENDPOINTS ==========
+            elif path == "/searchBytes":
+                pattern = params.get("pattern")
+                if not pattern:
+                    self._send_json_response(
+                        {"error": "Missing pattern parameter"}, 400
+                    )
+                    return
+                
+                mask = params.get("mask")
+                result = self.binary_ops.search_bytes(pattern, mask)
+                self._send_json_response({"matches": result})
+
+            elif path == "/findImmediateValues":
+                value = params.get("value")
+                if not value:
+                    self._send_json_response(
+                        {"error": "Missing value parameter"}, 400
+                    )
+                    return
+                
+                try:
+                    value_int = int(value, 16) if value.startswith("0x") else int(value)
+                    size = parse_int_or_default(params.get("size"), None)
+                    result = self.binary_ops.find_immediate_values(value_int, size)
+                    self._send_json_response({"matches": result})
+                except ValueError:
+                    self._send_json_response({"error": "Invalid value format"}, 400)
+
+            elif path == "/searchInstructions":
+                mnemonic = params.get("mnemonic")
+                if not mnemonic:
+                    self._send_json_response(
+                        {"error": "Missing mnemonic parameter"}, 400
+                    )
+                    return
+                
+                operand_pattern = params.get("operandPattern")
+                result = self.binary_ops.search_instructions(mnemonic, operand_pattern)
+                self._send_json_response({"matches": result})
+
+            elif path == "/findAPIsByPattern":
+                pattern = params.get("pattern")
+                if not pattern:
+                    self._send_json_response(
+                        {"error": "Missing pattern parameter"}, 400
+                    )
+                    return
+                
+                result = self.binary_ops.find_apis_by_pattern(pattern)
+                self._send_json_response({"matches": result})
+
+            # ========== ANALYSIS CONTROL ENDPOINTS ==========
+            elif path == "/runAnalysis":
+                analysis_type = params.get("analysisType", "auto")
+                result = self.binary_ops.run_analysis(analysis_type)
+                self._send_json_response(result)
+
+            elif path == "/analyzeFunction":
+                function_name = params.get("functionName")
+                if not function_name:
+                    self._send_json_response(
+                        {"error": "Missing functionName parameter"}, 400
+                    )
+                    return
+                
+                result = self.binary_ops.analyze_function(function_name)
+                self._send_json_response(result)
+
+            elif path == "/createFunction":
+                address = params.get("address")
+                if not address:
+                    self._send_json_response(
+                        {"error": "Missing address parameter"}, 400
+                    )
+                    return
+                
+                try:
+                    addr = int(address, 16) if address.startswith("0x") else int(address)
+                    result = self.binary_ops.create_function_at(addr)
+                    self._send_json_response(result)
+                except ValueError:
+                    self._send_json_response({"error": "Invalid address format"}, 400)
+
+            elif path == "/undefineFunction":
+                function_name = params.get("functionName")
+                if not function_name:
+                    self._send_json_response(
+                        {"error": "Missing functionName parameter"}, 400
+                    )
+                    return
+                
+                result = self.binary_ops.undefine_function(function_name)
+                self._send_json_response(result)
+
+            elif path == "/analysisInfo":
+                result = self.binary_ops.get_analysis_info()
+                self._send_json_response(result)
+
+            elif path == "/fileMetadata":
+                result = self.binary_ops.get_file_metadata()
+                self._send_json_response(result)
+
+            elif path == "/dominanceTree":
+                function_name = params.get("functionName")
+                if not function_name:
+                    self._send_json_response(
+                        {"error": "Missing functionName parameter"}, 400
+                    )
+                    return
+                
+                result = self.binary_ops.get_dominance_tree(function_name)
+                self._send_json_response(result)
+
+            elif path == "/getDataType":
+                address = params.get("address")
+                if not address:
+                    self._send_json_response(
+                        {"error": "Missing address parameter"}, 400
+                    )
+                    return
+                
+                try:
+                    addr = int(address, 16) if address.startswith("0x") else int(address)
+                    result = self.binary_ops.get_data_type_at(addr)
+                    self._send_json_response(result)
+                except ValueError:
+                    self._send_json_response({"error": "Invalid address format"}, 400)
+
             else:
                 self._send_json_response({"error": "Not found"}, 404)
 
@@ -1171,6 +1632,114 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
                             "message": "No comment found for this function",
                         }
                     )
+
+            # ========== TAG MANAGEMENT POST ENDPOINTS ==========
+            elif path == "/createTagType":
+                name = params.get("name")
+                if not name:
+                    self._send_json_response(
+                        {"error": "Missing name parameter"}, 400
+                    )
+                    return
+                
+                icon = params.get("icon", "🏷️")
+                visible = params.get("visible", "true").lower() == "true"
+                result = self.binary_ops.create_tag_type(name, icon, visible)
+                self._send_json_response(result)
+
+            elif path == "/createAddressTag":
+                tag_type_name = params.get("tagType")
+                address = params.get("address")
+                data = params.get("data")
+                
+                if not tag_type_name or not address:
+                    self._send_json_response(
+                        {"error": "Missing required parameters: tagType and address"}, 400
+                    )
+                    return
+                
+                try:
+                    addr = int(address, 16) if address.startswith("0x") else int(address)
+                    result = self.binary_ops.create_address_tag(tag_type_name, addr, data)
+                    self._send_json_response(result)
+                except ValueError:
+                    self._send_json_response({"error": "Invalid address format"}, 400)
+
+            elif path == "/createFunctionTag":
+                tag_type_name = params.get("tagType")
+                function_name = params.get("functionName")
+                data = params.get("data")
+                
+                if not tag_type_name or not function_name:
+                    self._send_json_response(
+                        {"error": "Missing required parameters: tagType and functionName"}, 400
+                    )
+                    return
+                
+                result = self.binary_ops.create_function_tag(tag_type_name, function_name, data)
+                self._send_json_response(result)
+
+            elif path == "/createDataTag":
+                tag_type_name = params.get("tagType")
+                address = params.get("address")
+                data = params.get("data")
+                
+                if not tag_type_name or not address:
+                    self._send_json_response(
+                        {"error": "Missing required parameters: tagType and address"}, 400
+                    )
+                    return
+                
+                try:
+                    addr = int(address, 16) if address.startswith("0x") else int(address)
+                    result = self.binary_ops.create_data_tag(tag_type_name, addr, data)
+                    self._send_json_response(result)
+                except ValueError:
+                    self._send_json_response({"error": "Invalid address format"}, 400)
+
+            elif path == "/removeTag":
+                tag_id = params.get("tagId")
+                if not tag_id:
+                    self._send_json_response(
+                        {"error": "Missing tagId parameter"}, 400
+                    )
+                    return
+                
+                result = self.binary_ops.remove_tag(tag_id)
+                self._send_json_response(result)
+
+            # ========== MEMORY & DATA ANALYSIS POST ENDPOINTS ==========
+            elif path == "/writeBytes":
+                address = params.get("address")
+                data = params.get("data")
+                if not address or not data:
+                    self._send_json_response(
+                        {"error": "Missing required parameters: address and data"}, 400
+                    )
+                    return
+                
+                try:
+                    addr = int(address, 16) if address.startswith("0x") else int(address)
+                    result = self.binary_ops.write_bytes(addr, data)
+                    self._send_json_response(result)
+                except ValueError:
+                    self._send_json_response({"error": "Invalid address format"}, 400)
+
+            elif path == "/defineDataType":
+                address = params.get("address")
+                type_string = params.get("typeString")
+                if not address or not type_string:
+                    self._send_json_response(
+                        {"error": "Missing required parameters: address and typeString"}, 400
+                    )
+                    return
+                
+                try:
+                    addr = int(address, 16) if address.startswith("0x") else int(address)
+                    result = self.binary_ops.define_data_type(addr, type_string)
+                    self._send_json_response(result)
+                except ValueError:
+                    self._send_json_response({"error": "Invalid address format"}, 400)
 
             else:
                 self._send_json_response({"error": "Not found"}, 404)
