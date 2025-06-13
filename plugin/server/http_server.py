@@ -1200,6 +1200,51 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
                 except ValueError:
                     self._send_json_response({"error": "Invalid address format"}, 400)
 
+            # ========== STRUCT AND TYPE MANAGEMENT ENDPOINTS ==========
+            elif path == "/listUserTypes":
+                offset = parse_int_or_default(params.get("offset"), 0)
+                limit = parse_int_or_default(params.get("limit"), 100)
+                
+                # Validate ranges
+                if offset < 0:
+                    offset = 0
+                if limit < 1 or limit > 1000:
+                    limit = 100
+                
+                result = self.binary_ops.list_user_types(offset, limit)
+                self._send_json_response(result)
+
+            elif path == "/getTypeReferences":
+                type_name = params.get("name")
+                if not type_name:
+                    self._send_json_response(
+                        {"error": "Missing name parameter"}, 400
+                    )
+                    return
+                
+                result = self.binary_ops.get_type_references(type_name)
+                self._send_json_response(result)
+
+            elif path == "/analyzeStructUsage":
+                struct_name = params.get("name")
+                if not struct_name:
+                    self._send_json_response(
+                        {"error": "Missing name parameter"}, 400
+                    )
+                    return
+                
+                result = self.binary_ops.analyze_struct_usage(struct_name)
+                self._send_json_response(result)
+
+            elif path == "/exportTypesHeader":
+                type_names = params.get("typeNames")
+                if type_names:
+                    # Split comma-separated type names
+                    type_names = [name.strip() for name in type_names.split(",") if name.strip()]
+                
+                result = self.binary_ops.export_types_as_c_header(type_names)
+                self._send_json_response(result)
+
             else:
                 self._send_json_response({"error": "Not found"}, 404)
 
@@ -1740,6 +1785,117 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
                     self._send_json_response(result)
                 except ValueError:
                     self._send_json_response({"error": "Invalid address format"}, 400)
+
+            # ========== STRUCT AND TYPE CREATION POST ENDPOINTS ==========
+            elif path == "/createStruct":
+                name = params.get("name")
+                members = params.get("members")
+                
+                if not name or not members:
+                    self._send_json_response(
+                        {"error": "Missing required parameters: name and members"}, 400
+                    )
+                    return
+                
+                # Parse members if it's a JSON string
+                try:
+                    import json
+                    if isinstance(members, str):
+                        members = json.loads(members)
+                    
+                    packed = params.get("packed", "false").lower() == "true"
+                    result = self.binary_ops.create_struct(name, members, packed)
+                    self._send_json_response(result)
+                except json.JSONDecodeError:
+                    self._send_json_response({"error": "Invalid JSON format for members"}, 400)
+
+            elif path == "/modifyStruct":
+                name = params.get("name")
+                operation = params.get("operation")
+                
+                if not name or not operation:
+                    self._send_json_response(
+                        {"error": "Missing required parameters: name and operation"}, 400
+                    )
+                    return
+                
+                # Collect operation-specific parameters
+                kwargs = {}
+                if operation == "add_member":
+                    kwargs["member_name"] = params.get("memberName")
+                    kwargs["member_type"] = params.get("memberType")
+                    if params.get("index"):
+                        kwargs["index"] = int(params.get("index"))
+                elif operation == "remove_member":
+                    kwargs["member_name"] = params.get("memberName")
+                
+                result = self.binary_ops.modify_struct(name, operation, **kwargs)
+                self._send_json_response(result)
+
+            elif path == "/createEnum":
+                name = params.get("name")
+                members = params.get("members")
+                
+                if not name or not members:
+                    self._send_json_response(
+                        {"error": "Missing required parameters: name and members"}, 400
+                    )
+                    return
+                
+                try:
+                    import json
+                    if isinstance(members, str):
+                        members = json.loads(members)
+                    
+                    size = int(params.get("size", "4"))
+                    result = self.binary_ops.create_enum(name, members, size)
+                    self._send_json_response(result)
+                except (json.JSONDecodeError, ValueError) as e:
+                    self._send_json_response({"error": f"Invalid parameter format: {e}"}, 400)
+
+            elif path == "/createUnion":
+                name = params.get("name")
+                members = params.get("members")
+                
+                if not name or not members:
+                    self._send_json_response(
+                        {"error": "Missing required parameters: name and members"}, 400
+                    )
+                    return
+                
+                try:
+                    import json
+                    if isinstance(members, str):
+                        members = json.loads(members)
+                    
+                    result = self.binary_ops.create_union(name, members)
+                    self._send_json_response(result)
+                except json.JSONDecodeError:
+                    self._send_json_response({"error": "Invalid JSON format for members"}, 400)
+
+            elif path == "/createTypedef":
+                name = params.get("name")
+                target_type = params.get("targetType")
+                
+                if not name or not target_type:
+                    self._send_json_response(
+                        {"error": "Missing required parameters: name and targetType"}, 400
+                    )
+                    return
+                
+                result = self.binary_ops.create_typedef(name, target_type)
+                self._send_json_response(result)
+
+            elif path == "/deleteUserType":
+                name = params.get("name")
+                if not name:
+                    self._send_json_response(
+                        {"error": "Missing required parameter: name"}, 400
+                    )
+                    return
+                
+                result = self.binary_ops.delete_user_type(name)
+                self._send_json_response(result)
 
             else:
                 self._send_json_response({"error": "Not found"}, 404)

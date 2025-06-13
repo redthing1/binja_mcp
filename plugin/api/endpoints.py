@@ -190,11 +190,14 @@ class BinaryNinjaEndpoints:
             
         try:
             # Parse the C code string to get type objects
-            parse_result = self.binary_ops.current_view.parse_types_from_string(c_code)
+            parsed_types, errors = self.binary_ops.current_view.parse_types_from_string(c_code)
+            
+            if errors:
+                raise ValueError(f"Parse errors: {errors}")
             
             # Define each type in the binary view
             defined_types = {}
-            for name, type_obj in parse_result.types.items():
+            for name, type_obj in parsed_types.items():
                 self.binary_ops.current_view.define_user_type(name, type_obj)
                 defined_types[str(name)] = str(type_obj)
                 

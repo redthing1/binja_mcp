@@ -746,6 +746,176 @@ def define_data_type(address: str, type_string: str) -> str:
     """
     return safe_post("defineDataType", {"address": address, "typeString": type_string})
 
+# ========== ENHANCED STRUCT AND TYPE MANAGEMENT TOOLS ==========
+
+@mcp.tool()
+def list_user_types(offset: int = 0, limit: int = 100) -> list:
+    """
+    List all user-defined types (structs, enums, typedefs) with metadata and pagination.
+    
+    Args:
+        offset: Pagination offset (default: 0)
+        limit: Maximum number of types to return (default: 100)
+        
+    Returns:
+        List of user-defined types with detailed information including
+        name, category (struct/enum/typedef), size, member count, and member details
+    """
+    return safe_get("listUserTypes", {"offset": offset, "limit": limit})
+
+@mcp.tool()
+def create_struct(name: str, members: str, packed: bool = False) -> str:
+    """
+    Create a new structure type with specified members.
+    
+    Args:
+        name: Name of the structure to create
+        members: JSON string defining struct members. Format: [{"name": "field1", "type": "int32_t"}, {"name": "field2", "type": "char*"}]
+        packed: Whether the structure should be packed (default: False)
+        
+    Example members JSON:
+        '[{"name": "id", "type": "int32_t"}, {"name": "name", "type": "char[32]"}, {"name": "next", "type": "struct Node*"}]'
+    """
+    return safe_post("createStruct", {"name": name, "members": members, "packed": packed})
+
+@mcp.tool()
+def modify_struct(name: str, operation: str, member_name: str = None, member_type: str = None, index: int = None) -> str:
+    """
+    Modify an existing structure type by adding or removing members.
+    
+    Args:
+        name: Name of the structure to modify
+        operation: Operation to perform - "add_member" or "remove_member"
+        member_name: Name of the member (required for both operations)
+        member_type: Type string for the member (required for add_member)
+        index: Position to insert new member (optional for add_member)
+        
+    Examples:
+        Add member: modify_struct("MyStruct", "add_member", "new_field", "int32_t")
+        Remove member: modify_struct("MyStruct", "remove_member", "old_field")
+    """
+    data = {"name": name, "operation": operation}
+    if member_name:
+        data["memberName"] = member_name
+    if member_type:
+        data["memberType"] = member_type
+    if index is not None:
+        data["index"] = index
+    
+    return safe_post("modifyStruct", data)
+
+@mcp.tool()
+def create_enum(name: str, members: str, size: int = 4) -> str:
+    """
+    Create a new enumeration type.
+    
+    Args:
+        name: Name of the enumeration to create
+        members: JSON string defining enum members. Format: [{"name": "VALUE1", "value": 0}, {"name": "VALUE2", "value": 1}]
+        size: Size of the enumeration in bytes (default: 4)
+        
+    Example members JSON:
+        '[{"name": "SUCCESS", "value": 0}, {"name": "ERROR", "value": 1}, {"name": "PENDING", "value": 2}]'
+    """
+    return safe_post("createEnum", {"name": name, "members": members, "size": size})
+
+@mcp.tool()
+def create_union(name: str, members: str) -> str:
+    """
+    Create a new union type.
+    
+    Args:
+        name: Name of the union to create
+        members: JSON string defining union members. Format: [{"name": "field1", "type": "int32_t"}, {"name": "field2", "type": "float"}]
+        
+    Example members JSON:
+        '[{"name": "int_val", "type": "int32_t"}, {"name": "float_val", "type": "float"}, {"name": "ptr_val", "type": "void*"}]'
+    """
+    return safe_post("createUnion", {"name": name, "members": members})
+
+@mcp.tool()
+def create_typedef(name: str, target_type: str) -> str:
+    """
+    Create a type alias (typedef).
+    
+    Args:
+        name: Name of the new type alias
+        target_type: Target type string to alias (e.g., "int32_t", "struct MyStruct*")
+        
+    Examples:
+        create_typedef("HANDLE", "void*")
+        create_typedef("NodePtr", "struct Node*")
+    """
+    return safe_post("createTypedef", {"name": name, "targetType": target_type})
+
+@mcp.tool()
+def delete_user_type(name: str) -> str:
+    """
+    Remove a user-defined type (struct, enum, union, or typedef).
+    
+    Args:
+        name: Name of the type to remove
+        
+    Warning: This will permanently remove the type definition.
+    Make sure no other types or variables depend on this type.
+    """
+    return safe_post("deleteUserType", {"name": name})
+
+@mcp.tool()
+def get_type_references(name: str) -> list:
+    """
+    Find all locations where a specific type is used throughout the binary.
+    
+    Args:
+        name: Name of the type to find references for
+        
+    Returns:
+        List of references showing where the type is used in variables,
+        function parameters, return types, and struct members
+    """
+    return safe_get("getTypeReferences", {"name": name})
+
+@mcp.tool()
+def analyze_struct_usage(name: str) -> str:
+    """
+    Analyze how a structure is used in the binary including usage patterns and member access frequency.
+    
+    Args:
+        name: Name of the structure to analyze
+        
+    Returns:
+        Detailed analysis including:
+        - Structure information (size, member count, packing)
+        - Usage patterns (as variable, pointer, array, parameter)
+        - Member access patterns and frequency
+        - Frequently accessed offsets
+        - Instantiation locations across functions
+    """
+    return safe_get("analyzeStructUsage", {"name": name})
+
+@mcp.tool()
+def export_types_as_c_header(type_names: str = None) -> str:
+    """
+    Export type definitions as C header code.
+    
+    Args:
+        type_names: Comma-separated list of specific type names to export. 
+                   If empty or None, exports all user-defined types.
+                   
+    Returns:
+        Complete C header file content with all type definitions,
+        properly formatted with includes and header guards
+        
+    Example:
+        export_types_as_c_header("MyStruct,MyEnum,MyTypedef")
+        export_types_as_c_header()  # Export all types
+    """
+    params = {}
+    if type_names:
+        params["typeNames"] = type_names
+    
+    return safe_get("exportTypesHeader", params)
+
 if __name__ == "__main__":
     print("Starting MCP bridge service...")
     mcp.run()

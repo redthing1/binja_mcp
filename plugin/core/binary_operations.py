@@ -3460,3 +3460,883 @@ class BinaryOperations:
             return {
                 "error": str(e)
             }
+
+    # ========== ENHANCED STRUCT AND TYPE MANAGEMENT METHODS ==========
+    
+    def list_user_types(self, offset: int = 0, limit: int = 100) -> Dict[str, Any]:
+        """List all user-defined types with metadata and pagination.
+        
+        Args:
+            offset: Pagination offset (default: 0)
+            limit: Maximum number of types to return (default: 100)
+            
+        Returns:
+            Dictionary with user-defined types and metadata
+        """
+        if not self._current_view:
+            raise RuntimeError("No binary loaded")
+            
+        try:
+            all_types = []
+            
+            # Get all user-defined types
+            for type_name in self._current_view.types:
+                try:
+                    type_obj = self._current_view.types[type_name]
+                    
+                    # Determine type category
+                    type_category = "unknown"
+                    size = 0
+                    members = []
+                    
+                    if hasattr(type_obj, 'type_class'):
+                        if type_obj.type_class == bn.TypeClass.StructureTypeClass:
+                            type_category = "struct"
+                            if hasattr(type_obj, 'structure'):
+                                size = type_obj.structure.width
+                                members = [{"name": member.name, "offset": member.offset, "type": str(member.type)} 
+                                         for member in type_obj.structure.members]
+                        elif type_obj.type_class == bn.TypeClass.EnumerationTypeClass:
+                            type_category = "enum"
+                            if hasattr(type_obj, 'enumeration'):
+                                members = [{"name": member.name, "value": member.value} 
+                                         for member in type_obj.enumeration.members]
+                        elif type_obj.type_class == bn.TypeClass.NamedTypeReferenceClass:
+                            type_category = "typedef"
+                        else:
+                            type_category = str(type_obj.type_class)
+                    
+                    type_info = {
+                        "name": type_name,
+                        "category": type_category,
+                        "size": size,
+                        "member_count": len(members),
+                        "members": members[:10] if len(members) > 10 else members,  # Limit to first 10 members
+                        "has_more_members": len(members) > 10,
+                        "definition": str(type_obj)
+                    }
+                    
+                    all_types.append(type_info)
+                    
+                except Exception as e:
+                    bn.log_error(f"Error processing type {type_name}: {e}")
+                    continue
+            
+            # Sort by name for consistent ordering
+            all_types.sort(key=lambda x: x["name"])
+            
+            # Apply pagination
+            total_count = len(all_types)
+            start_idx = offset
+            end_idx = min(offset + limit, total_count)
+            paginated_types = all_types[start_idx:end_idx]
+            
+            return {
+                "success": True,
+                "types": paginated_types,
+                "pagination": {
+                    "offset": offset,
+                    "limit": limit,
+                    "total": total_count,
+                    "has_more": end_idx < total_count
+                }
+            }
+            
+        except Exception as e:
+            bn.log_error(f"Error listing user types: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
+    def create_struct(self, name: str, members: List[Dict[str, Any]], packed: bool = False) -> Dict[str, Any]:
+        """Create a new structure type with specified members.
+        
+        Args:
+            name: Name of the structure
+            members: List of member dictionaries with 'name', 'type', and optional 'offset'
+            packed: Whether the structure should be packed (default: False)
+            
+        Returns:
+            Dictionary with creation result
+        """
+        if not self._current_view:
+            raise RuntimeError("No binary loaded")
+            
+        try:
+            # Check if type already exists
+            if name in self._current_view.types:
+                return {
+                    "success": False,
+                    "error": f"Type '{name}' already exists"
+                }
+            
+            # Create structure builder
+            struct_builder = bn.StructureBuilder.create(packed=packed)
+            
+            # Add members
+            for member in members:
+                try:
+                    member_name = member.get("name", "")
+                    member_type_str = member.get("type", "")
+                    member_offset = member.get("offset", None)
+                    
+                    if not member_name or not member_type_str:
+                        continue
+                    
+                    # Parse the type
+                    parsed_types, errors = self._current_view.parse_types_from_string(member_type_str)
+                    if errors:
+                        bn.log_warn(f"Warning parsing type '{member_type_str}': {errors}")
+                        
+                    if parsed_types and len(parsed_types) > 0:
+                        member_type = list(parsed_types.values())[0]
+                        
+                        if member_offset is not None:
+                            # Add at specific offset
+                            struct_builder.add_member_at_offset(member_name, member_type, member_offset)
+                        else:
+                            # Append to end
+                            struct_builder.append(member_type, member_name)
+                    else:
+                        # Fallback: try to create a basic type
+                        if member_type_str in ["int", "int32_t"]:
+                            member_type = bn.Type.int(4)
+                        elif member_type_str in ["char", "int8_t"]:
+                            member_type = bn.Type.int(1)
+                        elif member_type_str in ["short", "int16_t"]:
+                            member_type = bn.Type.int(2)
+                        elif member_type_str in ["long", "int64_t"]:
+                            member_type = bn.Type.int(8)
+                        elif member_type_str == "void*":
+                            member_type = bn.Type.pointer(self._current_view.arch, bn.Type.void())
+                        else:
+                            bn.log_warn(f"Could not parse type '{member_type_str}', skipping member '{member_name}'")
+                            continue
+                        
+                        if member_offset is not None:
+                            struct_builder.add_member_at_offset(member_name, member_type, member_offset)
+                        else:
+                            struct_builder.append(member_type, member_name)
+                            
+                except Exception as e:
+                    bn.log_error(f"Error adding member '{member.get('name', 'unknown')}': {e}")
+                    continue
+            
+            # Finalize the structure
+            structure = struct_builder.immutable_copy()
+            struct_type = bn.Type.structure(structure)
+            
+            # Define the type in the binary view
+            self._current_view.define_user_type(name, struct_type)
+            
+            return {
+                "success": True,
+                "name": name,
+                "size": getattr(structure, 'width', 0),
+                "member_count": len(getattr(structure, 'members', [])),
+                "members": [{"name": m.name, "offset": m.offset, "type": str(m.type)} for m in getattr(structure, 'members', [])]
+            }
+            
+        except Exception as e:
+            bn.log_error(f"Error creating structure: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
+    def modify_struct(self, name: str, operation: str, **kwargs) -> Dict[str, Any]:
+        """Modify an existing structure type.
+        
+        Args:
+            name: Name of the structure to modify
+            operation: Operation to perform ("add_member", "remove_member", "modify_member")
+            **kwargs: Operation-specific parameters
+            
+        Returns:
+            Dictionary with modification result
+        """
+        if not self._current_view:
+            raise RuntimeError("No binary loaded")
+            
+        try:
+            # Check if type exists
+            if name not in self._current_view.types:
+                return {
+                    "success": False,
+                    "error": f"Type '{name}' not found"
+                }
+            
+            existing_type = self._current_view.types[name]
+            
+            # Verify it's a structure
+            if not hasattr(existing_type, 'structure') or existing_type.type_class != bn.TypeClass.StructureTypeClass:
+                return {
+                    "success": False,
+                    "error": f"Type '{name}' is not a structure"
+                }
+            
+            # Get the existing structure
+            existing_struct = existing_type.structure
+            
+            # Create a new structure builder based on the existing structure
+            struct_builder = bn.StructureBuilder.create(packed=existing_struct.packed)
+            
+            # Copy existing members
+            for member in existing_struct.members:
+                struct_builder.append(member.type, member.name)
+            
+            # Perform the operation
+            if operation == "add_member":
+                member_name = kwargs.get("member_name", "")
+                member_type_str = kwargs.get("member_type", "")
+                insert_index = kwargs.get("index", None)
+                
+                if not member_name or not member_type_str:
+                    return {
+                        "success": False,
+                        "error": "member_name and member_type are required for add_member operation"
+                    }
+                
+                # Parse the new member type
+                parsed_types, errors = self._current_view.parse_types_from_string(member_type_str)
+                if errors or not parsed_types:
+                    return {
+                        "success": False,
+                        "error": f"Could not parse member type '{member_type_str}': {errors}"
+                    }
+                
+                member_type = list(parsed_types.values())[0]
+                
+                if insert_index is not None:
+                    # Insert at specific index position (not offset)
+                    # We need to rebuild the structure with the new member at the right position
+                    members_list = []
+                    for i, existing_member in enumerate(existing_struct.members):
+                        if i == insert_index:
+                            members_list.append((member_type, member_name))
+                        members_list.append((existing_member.type, existing_member.name))
+                    # If inserting at end
+                    if insert_index >= len(existing_struct.members):
+                        members_list.append((member_type, member_name))
+                    
+                    # Rebuild structure with new member list
+                    struct_builder = bn.StructureBuilder.create(packed=existing_struct.packed)
+                    for m_type, m_name in members_list:
+                        struct_builder.append(m_type, m_name)
+                else:
+                    struct_builder.append(member_type, member_name)
+                    
+            elif operation == "remove_member":
+                member_name = kwargs.get("member_name", "")
+                
+                if not member_name:
+                    return {
+                        "success": False,
+                        "error": "member_name is required for remove_member operation"
+                    }
+                
+                # Find and remove the member by rebuilding without it
+                struct_builder = bn.StructureBuilder.create(packed=existing_struct.packed)
+                
+                found_member = False
+                for member in existing_struct.members:
+                    if member.name == member_name:
+                        found_member = True
+                        continue  # Skip this member (remove it)
+                    struct_builder.append(member.type, member.name)
+                
+                if not found_member:
+                    return {
+                        "success": False,
+                        "error": f"Member '{member_name}' not found in structure '{name}'"
+                    }
+                    
+            else:
+                return {
+                    "success": False,
+                    "error": f"Unknown operation: {operation}"
+                }
+            
+            # Finalize the modified structure
+            new_structure = struct_builder.immutable_copy()
+            new_struct_type = bn.Type.structure(new_structure)
+            
+            # Update the type definition
+            self._current_view.define_user_type(name, new_struct_type)
+            
+            return {
+                "success": True,
+                "name": name,
+                "operation": operation,
+                "size": getattr(new_structure, 'width', 0),
+                "member_count": len(getattr(new_structure, 'members', [])),
+                "members": [{"name": m.name, "offset": m.offset, "type": str(m.type)} for m in getattr(new_structure, 'members', [])]
+            }
+            
+        except Exception as e:
+            bn.log_error(f"Error modifying structure: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
+    def create_enum(self, name: str, members: List[Dict[str, Any]], size: int = 4) -> Dict[str, Any]:
+        """Create a new enumeration type.
+        
+        Args:
+            name: Name of the enumeration
+            members: List of member dictionaries with 'name' and 'value'
+            size: Size of the enumeration in bytes (default: 4)
+            
+        Returns:
+            Dictionary with creation result
+        """
+        if not self._current_view:
+            raise RuntimeError("No binary loaded")
+            
+        try:
+            # Check if type already exists
+            if name in self._current_view.types:
+                return {
+                    "success": False,
+                    "error": f"Type '{name}' already exists"
+                }
+            
+            # Create enumeration builder
+            enum_builder = bn.EnumerationBuilder.create()
+            
+            # Add members
+            for member in members:
+                try:
+                    member_name = member.get("name", "")
+                    member_value = member.get("value", 0)
+                    
+                    if not member_name:
+                        continue
+                    
+                    # Ensure value is an integer
+                    if isinstance(member_value, str):
+                        if member_value.startswith("0x"):
+                            member_value = int(member_value, 16)
+                        else:
+                            member_value = int(member_value)
+                    
+                    enum_builder.append(member_name, member_value)
+                    
+                except Exception as e:
+                    bn.log_error(f"Error adding enum member '{member.get('name', 'unknown')}': {e}")
+                    continue
+            
+            # Create enumeration type from builder
+            enum_type = bn.Type.enumeration_type(self._current_view.arch, enum_builder, size)
+            
+            # Define the type in the binary view
+            self._current_view.define_user_type(name, enum_type)
+            
+            return {
+                "success": True,
+                "name": name,
+                "size": size,
+                "member_count": len(getattr(enum_builder, 'members', [])),
+                "members": [{"name": m.name, "value": m.value} for m in getattr(enum_builder, 'members', [])]
+            }
+            
+        except Exception as e:
+            bn.log_error(f"Error creating enumeration: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
+    def create_union(self, name: str, members: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Create a new union type.
+        
+        Args:
+            name: Name of the union
+            members: List of member dictionaries with 'name' and 'type'
+            
+        Returns:
+            Dictionary with creation result
+        """
+        if not self._current_view:
+            raise RuntimeError("No binary loaded")
+            
+        try:
+            # Check if type already exists
+            if name in self._current_view.types:
+                return {
+                    "success": False,
+                    "error": f"Type '{name}' already exists"
+                }
+            
+            # Create union using StructureBuilder with Union type
+            # Create the union structure builder
+            struct_builder = bn.StructureBuilder.create(
+                type=StructureVariant.UnionStructureType
+            )
+            
+            # Add union members
+            for member in members:
+                try:
+                    member_name = member.get("name", "")
+                    member_type_str = member.get("type", "")
+                    
+                    if not member_name or not member_type_str:
+                        continue
+                    
+                    # Parse the type
+                    parsed_types, errors = self._current_view.parse_types_from_string(member_type_str)
+                    if errors:
+                        bn.log_warn(f"Warning parsing type '{member_type_str}': {errors}")
+                        
+                    if parsed_types and len(parsed_types) > 0:
+                        member_type = list(parsed_types.values())[0]
+                        # Add member to the union structure builder
+                        struct_builder.append(member_type, member_name)
+                    else:
+                        bn.log_warn(f"Could not parse type '{member_type_str}', skipping member '{member_name}'")
+                        continue
+                        
+                except Exception as e:
+                    bn.log_error(f"Error processing union member '{member.get('name', 'unknown')}': {e}")
+                    continue
+            
+            # Finalize the union
+            structure = struct_builder.immutable_copy()
+            union_type = bn.Type.structure(structure)
+            
+            # Define the type in the binary view
+            self._current_view.define_user_type(name, union_type)
+            
+            return {
+                "success": True,
+                "name": name,
+                "size": getattr(structure, 'width', 0),
+                "member_count": len(getattr(structure, 'members', [])),
+                "members": [{"name": m.name, "type": str(m.type)} for m in getattr(structure, 'members', [])]
+            }
+            
+        except Exception as e:
+            bn.log_error(f"Error creating union: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
+    def create_typedef(self, name: str, target_type: str) -> Dict[str, Any]:
+        """Create a type alias (typedef).
+        
+        Args:
+            name: Name of the new type alias
+            target_type: Target type string to alias
+            
+        Returns:
+            Dictionary with creation result
+        """
+        if not self._current_view:
+            raise RuntimeError("No binary loaded")
+            
+        try:
+            # Check if type already exists
+            if name in self._current_view.types:
+                return {
+                    "success": False,
+                    "error": f"Type '{name}' already exists"
+                }
+            
+            # Parse the target type
+            parsed_types, errors = self._current_view.parse_types_from_string(target_type)
+            if errors or not parsed_types:
+                return {
+                    "success": False,
+                    "error": f"Could not parse target type '{target_type}': {errors}"
+                }
+            
+            target_type_obj = list(parsed_types.values())[0]
+            
+            # Create named type reference - typedef is just an alias
+            typedef_type = target_type_obj
+            
+            # Define the type in the binary view
+            self._current_view.define_user_type(name, typedef_type)
+            
+            return {
+                "success": True,
+                "name": name,
+                "target_type": target_type,
+                "size": getattr(target_type_obj, 'width', 0),
+                "definition": str(typedef_type)
+            }
+            
+        except Exception as e:
+            bn.log_error(f"Error creating typedef: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
+    def delete_user_type(self, name: str) -> Dict[str, Any]:
+        """Remove a user-defined type.
+        
+        Args:
+            name: Name of the type to remove
+            
+        Returns:
+            Dictionary with deletion result
+        """
+        if not self._current_view:
+            raise RuntimeError("No binary loaded")
+            
+        try:
+            # Check if type exists
+            if name not in self._current_view.types:
+                return {
+                    "success": False,
+                    "error": f"Type '{name}' not found"
+                }
+            
+            # Remove the type
+            self._current_view.undefine_user_type(name)
+            
+            return {
+                "success": True,
+                "name": name,
+                "status": "Type deleted successfully"
+            }
+            
+        except Exception as e:
+            bn.log_error(f"Error deleting type: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
+    def get_type_references(self, name: str) -> Dict[str, Any]:
+        """Find where a type is used throughout the binary.
+        
+        Args:
+            name: Name of the type to find references for
+            
+        Returns:
+            Dictionary with reference information
+        """
+        if not self._current_view:
+            raise RuntimeError("No binary loaded")
+            
+        try:
+            # Check if type exists
+            if name not in self._current_view.types:
+                return {
+                    "success": False,
+                    "error": f"Type '{name}' not found"
+                }
+            
+            references = {
+                "variables": [],
+                "function_parameters": [],
+                "function_returns": [],
+                "struct_members": [],
+                "total_count": 0
+            }
+            
+            # Search through functions for variable usage
+            for func in self._current_view.functions:
+                try:
+                    # Check function signature
+                    if hasattr(func, 'type') and func.type:
+                        func_type_str = str(func.type)
+                        if name in func_type_str:
+                            references["function_returns"].append({
+                                "function": func.name,
+                                "address": hex(func.start),
+                                "signature": func_type_str
+                            })
+                    
+                    # Check function variables
+                    for var in func.vars:
+                        var_type_str = str(var.type)
+                        if name in var_type_str:
+                            references["variables"].append({
+                                "function": func.name,
+                                "variable": var.name,
+                                "type": var_type_str,
+                                "address": hex(func.start)
+                            })
+                            
+                except Exception as e:
+                    bn.log_error(f"Error checking function {func.name}: {e}")
+                    continue
+            
+            # Search through other types for member usage
+            for type_name, type_obj in self._current_view.types.items():
+                if type_name == name:
+                    continue
+                    
+                try:
+                    if hasattr(type_obj, 'structure') and type_obj.structure:
+                        for member in type_obj.structure.members:
+                            member_type_str = str(member.type)
+                            if name in member_type_str:
+                                references["struct_members"].append({
+                                    "struct": type_name,
+                                    "member": member.name,
+                                    "type": member_type_str
+                                })
+                except Exception:
+                    continue
+            
+            # Calculate total count
+            references["total_count"] = (
+                len(references["variables"]) +
+                len(references["function_parameters"]) +
+                len(references["function_returns"]) +
+                len(references["struct_members"])
+            )
+            
+            return {
+                "success": True,
+                "type_name": name,
+                "references": references
+            }
+            
+        except Exception as e:
+            bn.log_error(f"Error finding type references: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
+    def analyze_struct_usage(self, name: str) -> Dict[str, Any]:
+        """Analyze how a structure is used in the binary.
+        
+        Args:
+            name: Name of the structure to analyze
+            
+        Returns:
+            Dictionary with usage analysis
+        """
+        if not self._current_view:
+            raise RuntimeError("No binary loaded")
+            
+        try:
+            # Check if type exists and is a structure
+            if name not in self._current_view.types:
+                return {
+                    "success": False,
+                    "error": f"Type '{name}' not found"
+                }
+            
+            type_obj = self._current_view.types[name]
+            if not hasattr(type_obj, 'structure') or type_obj.type_class != bn.TypeClass.StructureTypeClass:
+                return {
+                    "success": False,
+                    "error": f"Type '{name}' is not a structure"
+                }
+            
+            structure = type_obj.structure
+            analysis = {
+                "struct_info": {
+                    "name": name,
+                    "size": getattr(structure, 'width', 0),
+                    "member_count": len(getattr(structure, 'members', [])),
+                    "is_packed": getattr(structure, 'packed', False)
+                },
+                "usage_patterns": {
+                    "as_variable": 0,
+                    "as_pointer": 0,
+                    "as_array": 0,
+                    "as_parameter": 0,
+                    "as_return_type": 0
+                },
+                "member_access_patterns": {},
+                "frequent_offsets": [],
+                "instantiation_locations": []
+            }
+            
+            # Initialize member access tracking
+            for member in getattr(structure, 'members', []):
+                analysis["member_access_patterns"][member.name] = {
+                    "offset": member.offset,
+                    "type": str(member.type),
+                    "access_count": 0,
+                    "functions_using": []
+                }
+            
+            # Analyze usage across functions
+            for func in self._current_view.functions:
+                try:
+                    # Check function variables
+                    for var in func.vars:
+                        var_type_str = str(var.type)
+                        if name in var_type_str:
+                            if "*" in var_type_str:
+                                analysis["usage_patterns"]["as_pointer"] += 1
+                            elif "[" in var_type_str:
+                                analysis["usage_patterns"]["as_array"] += 1
+                            else:
+                                analysis["usage_patterns"]["as_variable"] += 1
+                            
+                            analysis["instantiation_locations"].append({
+                                "function": func.name,
+                                "variable": var.name,
+                                "type": var_type_str,
+                                "address": hex(func.start)
+                            })
+                    
+                    # Analyze HLIL for member access patterns
+                    try:
+                        hlil = func.hlil_if_available
+                        if hlil:
+                            for block in hlil:
+                                for instr in block:
+                                    # Look for struct member accesses
+                                    instr_str = str(instr)
+                                    for member in getattr(structure, 'members', []):
+                                        if f".{member.name}" in instr_str or f"->{member.name}" in instr_str:
+                                            analysis["member_access_patterns"][member.name]["access_count"] += 1
+                                            if func.name not in analysis["member_access_patterns"][member.name]["functions_using"]:
+                                                analysis["member_access_patterns"][member.name]["functions_using"].append(func.name)
+                    except Exception:
+                        pass
+                        
+                except Exception as e:
+                    bn.log_error(f"Error analyzing function {func.name}: {e}")
+                    continue
+            
+            # Calculate frequently accessed offsets
+            offset_counts = {}
+            for member_name, member_data in analysis["member_access_patterns"].items():
+                offset = member_data["offset"]
+                count = member_data["access_count"]
+                if count > 0:
+                    offset_counts[offset] = offset_counts.get(offset, 0) + count
+            
+            # Sort by access count
+            analysis["frequent_offsets"] = [
+                {"offset": offset, "access_count": count}
+                for offset, count in sorted(offset_counts.items(), key=lambda x: x[1], reverse=True)
+            ]
+            
+            return {
+                "success": True,
+                "analysis": analysis
+            }
+            
+        except Exception as e:
+            bn.log_error(f"Error analyzing struct usage: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
+    def export_types_as_c_header(self, type_names: List[str] = None) -> Dict[str, Any]:
+        """Export type definitions as C header code.
+        
+        Args:
+            type_names: Optional list of specific type names to export. If None, exports all.
+            
+        Returns:
+            Dictionary with C header code
+        """
+        if not self._current_view:
+            raise RuntimeError("No binary loaded")
+            
+        try:
+            header_lines = [
+                "/* Generated C Header */",
+                "/* Binary Ninja MCP Export */",
+                "",
+                "#ifndef _BINJA_TYPES_H_",
+                "#define _BINJA_TYPES_H_",
+                "",
+                "#include <stdint.h>",
+                "#include <stddef.h>",
+                ""
+            ]
+            
+            types_to_export = type_names if type_names else list(self._current_view.types.keys())
+            exported_count = 0
+            
+            for type_name in types_to_export:
+                if type_name not in self._current_view.types:
+                    continue
+                    
+                try:
+                    type_obj = self._current_view.types[type_name]
+                    
+                    # Generate C definition based on type
+                    if hasattr(type_obj, 'structure') and type_obj.type_class == bn.TypeClass.StructureTypeClass:
+                        structure = type_obj.structure
+                        
+                        # Check if this is a union type using the type property
+                        if hasattr(structure, 'type') and structure.type == bn.StructureVariant.UnionStructureType:
+                            header_lines.append(f"union {type_name} {{")
+                        else:
+                            header_lines.append(f"struct {type_name} {{")
+                        
+                        for member in structure.members:
+                            member_type_str = str(member.type).replace("struct ", "").replace("union ", "")
+                            header_lines.append(f"    {member_type_str} {member.name}; /* offset: 0x{member.offset:x} */")
+                        
+                        if structure.packed:
+                            header_lines.append("} __attribute__((packed));")
+                        else:
+                            header_lines.append("};")
+                        header_lines.append("")
+                        
+                    elif hasattr(type_obj, 'enumeration') and type_obj.type_class == bn.TypeClass.EnumerationTypeClass:
+                        enumeration = type_obj.enumeration
+                        header_lines.append(f"enum {type_name} {{")
+                        
+                        # Add enum members with safe access pattern
+                        members = getattr(enumeration, 'members', [])
+                        if hasattr(enumeration, '__iter__'):  # Some enum types are iterable
+                            try:
+                                for member in enumeration:
+                                    if hasattr(member, 'name') and hasattr(member, 'value'):
+                                        header_lines.append(f"    {member.name} = {member.value},")
+                            except (TypeError, AttributeError):
+                                # Fallback: try to access as list
+                                for member in members:
+                                    if hasattr(member, 'name') and hasattr(member, 'value'):
+                                        header_lines.append(f"    {member.name} = {member.value},")
+                        else:
+                            # Direct member access
+                            for member in members:
+                                if hasattr(member, 'name') and hasattr(member, 'value'):
+                                    header_lines.append(f"    {member.name} = {member.value},")
+                        
+                        header_lines.append("};")
+                        header_lines.append("")
+                    
+                    elif type_obj.type_class == bn.TypeClass.NamedTypeReferenceClass:
+                        # This is a typedef
+                        target_type = str(type_obj).replace(f"typedef {type_name}", "").strip()
+                        header_lines.append(f"typedef {target_type} {type_name};")
+                        header_lines.append("")
+                    
+                    exported_count += 1
+                    
+                except Exception as e:
+                    bn.log_error(f"Error exporting type {type_name}: {e}")
+                    continue
+            
+            header_lines.extend([
+                "#endif /* _BINJA_TYPES_H_ */",
+                ""
+            ])
+            
+            return {
+                "success": True,
+                "header_code": "\n".join(header_lines),
+                "exported_count": exported_count,
+                "total_types": len(types_to_export)
+            }
+            
+        except Exception as e:
+            bn.log_error(f"Error exporting types: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
