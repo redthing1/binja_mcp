@@ -213,7 +213,7 @@ def list_data_items(offset: int = 0, limit: int = 100) -> list:
 @mcp.tool()
 def search_functions_by_name(query: str, offset: int = 0, limit: int = 100) -> list:
     """
-    Search for functions whose name contains the given substring.
+    Search for functions whose name contains the given substring (case insensitive).
     """
     if not query:
         return ["Error: query string is required"]
@@ -346,7 +346,7 @@ def create_tag_type(name: str, icon: str = "🏷️", visible: bool = True) -> s
 @mcp.tool()
 def list_tags(tag_type: str = None, offset: int = 0, limit: int = 100) -> list:
     """
-    List tags in the binary, optionally filtered by tag type.
+    List tags in the binary, optionally filtered by tag type (case insensitive).
     
     Args:
         tag_type: Optional tag type name to filter by
@@ -426,7 +426,7 @@ def remove_tag(tag_id: str) -> str:
 @mcp.tool()
 def search_tags(query: str) -> list:
     """
-    Search tags by their data content.
+    Search tags by their data content (case insensitive).
     
     Args:
         query: Search query to match against tag data

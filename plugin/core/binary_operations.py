@@ -67,17 +67,26 @@ class BinaryOperations:
         except ValueError:
             pass
 
-        # Handle name-based lookup with case sensitivity
+        # Handle name-based lookup - try exact match first, then case-insensitive
+        exact_match = None
+        case_insensitive_match = None
+        
         for func in self._current_view.functions:
             if func.name == identifier:
-                bn.log_info(f"Found function by name: {func.name}")
-                return func
-
-        # Try case-insensitive match as fallback
-        for func in self._current_view.functions:
-            if func.name.lower() == str(identifier).lower():
-                bn.log_info(f"Found function by case-insensitive name: {func.name}")
-                return func
+                exact_match = func
+                break
+            elif func.name.lower() == str(identifier).lower():
+                # Store first case-insensitive match but keep looking for exact match
+                if case_insensitive_match is None:
+                    case_insensitive_match = func
+        
+        # Prefer exact match, but use case-insensitive if available
+        if exact_match:
+            bn.log_info(f"Found function by exact name: {exact_match.name}")
+            return exact_match
+        elif case_insensitive_match:
+            bn.log_info(f"Found function by case-insensitive name: {case_insensitive_match.name}")
+            return case_insensitive_match
 
         # Try symbol table lookup as last resort
         symbol = self._current_view.get_symbol_by_raw_name(str(identifier))
@@ -1138,6 +1147,21 @@ class BinaryOperations:
 
     # ========== TAG MANAGEMENT METHODS ==========
     
+    def _find_tag_type(self, tag_type_name: str) -> bool:
+        """Helper method to find tag type by name (case insensitive).
+        
+        Args:
+            tag_type_name: Name of the tag type to find
+            
+        Returns:
+            True if tag type exists, False otherwise
+        """
+        tag_type_name_lower = tag_type_name.lower()
+        for tt in self._current_view.tag_types.values():
+            if tt.name.lower() == tag_type_name_lower:
+                return True
+        return False
+
     def get_tag_types(self) -> List[Dict[str, Any]]:
         """Get all available tag types in the binary view.
         
@@ -1228,11 +1252,12 @@ class BinaryOperations:
             
         try:
             all_tags = []
+            tag_type_name_lower = tag_type_name.lower() if tag_type_name else None
             
             # Get all data tags using the correct Binary Ninja API
             # tags property returns list of (address, Tag) pairs
             for address, tag in self._current_view.tags:
-                if tag_type_name is None or tag.type.name == tag_type_name:
+                if tag_type_name_lower is None or tag.type.name.lower() == tag_type_name_lower:
                     # Determine what's at this address
                     location_type = "data"
                     function_name = None
@@ -1257,7 +1282,7 @@ class BinaryOperations:
             for func in self._current_view.functions:
                 # Function tags return (arch, address, Tag) tuples
                 for arch, tag_addr, tag in func.tags:
-                    if tag_type_name is None or tag.type.name == tag_type_name:
+                    if tag_type_name_lower is None or tag.type.name.lower() == tag_type_name_lower:
                         all_tags.append({
                             "id": tag.id,
                             "type": tag.type.name,
@@ -1299,14 +1324,8 @@ class BinaryOperations:
             raise RuntimeError("No binary loaded")
             
         try:
-            # Check if tag type exists
-            tag_type_exists = False
-            for tt in self._current_view.tag_types.values():
-                if tt.name == tag_type_name:
-                    tag_type_exists = True
-                    break
-            
-            if not tag_type_exists:
+            # Check if tag type exists (case insensitive)
+            if not self._find_tag_type(tag_type_name):
                 return {
                     "success": False,
                     "error": f"Tag type '{tag_type_name}' not found"
@@ -1352,14 +1371,8 @@ class BinaryOperations:
                     "error": f"Function '{function_name}' not found"
                 }
             
-            # Check if tag type exists
-            tag_type_exists = False
-            for tt in self._current_view.tag_types.values():
-                if tt.name == tag_type_name:
-                    tag_type_exists = True
-                    break
-            
-            if not tag_type_exists:
+            # Check if tag type exists (case insensitive)
+            if not self._find_tag_type(tag_type_name):
                 return {
                     "success": False,
                     "error": f"Tag type '{tag_type_name}' not found"
@@ -1398,14 +1411,8 @@ class BinaryOperations:
             raise RuntimeError("No binary loaded")
             
         try:
-            # Check if tag type exists
-            tag_type_exists = False
-            for tt in self._current_view.tag_types.values():
-                if tt.name == tag_type_name:
-                    tag_type_exists = True
-                    break
-            
-            if not tag_type_exists:
+            # Check if tag type exists (case insensitive)
+            if not self._find_tag_type(tag_type_name):
                 return {
                     "success": False,
                     "error": f"Tag type '{tag_type_name}' not found"
