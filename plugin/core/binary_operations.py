@@ -1229,51 +1229,56 @@ class BinaryOperations:
         try:
             all_tags = []
             
-            # Get tags from functions
+            # Get all data tags using the correct Binary Ninja API
+            # tags property returns list of (address, Tag) pairs
+            for address, tag in self._current_view.tags:
+                if tag_type_name is None or tag.type.name == tag_type_name:
+                    # Determine what's at this address
+                    location_type = "data"
+                    function_name = None
+                    
+                    # Check if this address is in a function
+                    func = self._current_view.get_function_at(address)
+                    if func:
+                        location_type = "function"
+                        function_name = func.name
+                    
+                    all_tags.append({
+                        "id": tag.id,
+                        "type": tag.type.name,
+                        "type_id": tag.type.id,
+                        "address": hex(address),
+                        "location_type": location_type,
+                        "function_name": function_name,
+                        "data": tag.data if hasattr(tag, 'data') else None
+                    })
+            
+            # Get function-specific tags
             for func in self._current_view.functions:
-                for tag in func.tags:
+                # Function tags return (arch, address, Tag) tuples
+                for arch, tag_addr, tag in func.tags:
                     if tag_type_name is None or tag.type.name == tag_type_name:
                         all_tags.append({
                             "id": tag.id,
                             "type": tag.type.name,
                             "type_id": tag.type.id,
-                            "address": hex(func.start),
+                            "address": hex(tag_addr),
                             "location_type": "function",
                             "function_name": func.name,
                             "data": tag.data if hasattr(tag, 'data') else None
                         })
             
-            # Get tags from addresses
-            for address_tag in self._current_view.address_tags:
-                tag = address_tag.tag
-                if tag_type_name is None or tag.type.name == tag_type_name:
-                    all_tags.append({
-                        "id": tag.id,
-                        "type": tag.type.name,
-                        "type_id": tag.type.id,
-                        "address": hex(address_tag.address),
-                        "location_type": "address",
-                        "function_name": None,
-                        "data": tag.data if hasattr(tag, 'data') else None
-                    })
-            
-            # Get tags from data
-            for data_tag in self._current_view.data_tags:
-                tag = data_tag.tag
-                if tag_type_name is None or tag.type.name == tag_type_name:
-                    all_tags.append({
-                        "id": tag.id,
-                        "type": tag.type.name,
-                        "type_id": tag.type.id,
-                        "address": hex(data_tag.address),
-                        "location_type": "data",
-                        "function_name": None,
-                        "data": tag.data if hasattr(tag, 'data') else None
-                    })
+            # Remove duplicates (a tag might appear in both data tags and function tags)
+            seen_ids = set()
+            unique_tags = []
+            for tag in all_tags:
+                if tag["id"] not in seen_ids:
+                    seen_ids.add(tag["id"])
+                    unique_tags.append(tag)
             
             # Sort by address and apply pagination
-            all_tags.sort(key=lambda x: int(x["address"], 16))
-            return all_tags[offset:offset + limit]
+            unique_tags.sort(key=lambda x: int(x["address"], 16))
+            return unique_tags[offset:offset + limit]
             
         except Exception as e:
             bn.log_error(f"Error getting tags: {e}")
@@ -1450,14 +1455,16 @@ class BinaryOperations:
             # Check if address is in a function and get function tags
             func = self._current_view.get_function_at(address)
             if func:
-                for tag in func.tags:
-                    tags_at_address.append({
-                        "id": tag.id,
-                        "type": tag.type.name,
-                        "location_type": "function",
-                        "function_name": func.name,
-                        "data": tag.data if hasattr(tag, 'data') else None
-                    })
+                # Function tags return (arch, address, Tag) tuples
+                for arch, tag_addr, tag in func.tags:
+                    if tag_addr == address:  # Only include tags at this specific address
+                        tags_at_address.append({
+                            "id": tag.id,
+                            "type": tag.type.name,
+                            "location_type": "function",
+                            "function_name": func.name,
+                            "data": tag.data if hasattr(tag, 'data') else None
+                        })
             
             return tags_at_address
             

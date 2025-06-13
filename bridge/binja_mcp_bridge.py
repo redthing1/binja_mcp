@@ -22,7 +22,24 @@ def safe_get(endpoint: str, params: dict = None) -> list:
         response = requests.get(url, timeout=5)
         response.encoding = "utf-8"
         if response.ok:
-            return response.text.splitlines()
+            try:
+                # Try to parse JSON response
+                json_data = response.json()
+                # If the response has a main data key, return that array
+                if isinstance(json_data, dict):
+                    # Look for common array keys
+                    for key in ["tags", "functions", "methods", "strings", "imports", "exports", "data", "matches", "types"]:
+                        if key in json_data and isinstance(json_data[key], list):
+                            return json_data[key]
+                    # If no array found, return the whole response as a single item
+                    return [json_data]
+                elif isinstance(json_data, list):
+                    return json_data
+                else:
+                    return [json_data]
+            except ValueError:
+                # Fallback to original behavior for non-JSON responses
+                return response.text.splitlines()
         else:
             return [f"Error {response.status_code}: {response.text.strip()}"]
     except Exception as e:
