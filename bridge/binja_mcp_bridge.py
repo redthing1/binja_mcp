@@ -28,7 +28,7 @@ def safe_get(endpoint: str, params: dict = None) -> list:
                 # If the response has a main data key, return that array
                 if isinstance(json_data, dict):
                     # Look for common array keys
-                    for key in ["tags", "functions", "methods", "strings", "imports", "exports", "data", "matches", "types"]:
+                    for key in ["tags", "functions", "methods", "strings", "imports", "exports", "data", "matches", "types", "sections", "symbols", "references", "callees", "callers"]:
                         if key in json_data and isinstance(json_data[key], list):
                             return json_data[key]
                     # If no array found, return the whole response as a single item
@@ -926,6 +926,139 @@ def export_types_as_c_header(type_names: str = None) -> str:
         params["typeNames"] = type_names
     
     return safe_get("exportTypesHeader", params)
+
+
+# New advanced analysis tools
+
+@mcp.tool()
+def get_memory_map() -> list:
+    """
+    Get a comprehensive memory layout map including segments, sections, and entry points.
+    
+    Returns detailed information about the binary's memory structure including:
+    - Segments with permissions and entropy data
+    - Sections with their names and locations
+    - Entry points and address ranges
+    - Memory region types and characteristics
+    """
+    return safe_get("memory_map")
+
+@mcp.tool()
+def get_sections(offset: int = 0, limit: int = 100) -> list:
+    """
+    Get detailed information about binary sections with pagination.
+    
+    Args:
+        offset: Starting index for pagination
+        limit: Maximum number of sections to return
+        
+    Returns:
+        List of sections with their names, addresses, sizes, and types
+    """
+    return safe_get("sections", {"offset": offset, "limit": limit})
+
+@mcp.tool()
+def get_entropy(address: str, length: int, block_size: int = 256) -> list:
+    """
+    Calculate Shannon entropy for a specific memory region.
+    
+    Args:
+        address: Starting address (hex string like "0x401000" or decimal)
+        length: Number of bytes to analyze
+        block_size: Size of each entropy calculation block (default 256)
+        
+    Returns:
+        Entropy analysis results including values, averages, and statistics
+        
+    Example:
+        get_entropy("0x401000", 4096, 512)
+    """
+    return safe_get("entropy", {"address": address, "length": length, "block_size": block_size})
+
+@mcp.tool()
+def search_symbols(name_pattern: str, namespace: str = None) -> list:
+    """
+    Search for symbols by name pattern with optional namespace filtering.
+    
+    Args:
+        name_pattern: Symbol name or pattern to search for
+        namespace: Optional namespace to filter results
+        
+    Returns:
+        List of matching symbols with their names, addresses, types, and namespaces
+        
+    Example:
+        search_symbols("main")
+        search_symbols("str", "std")
+    """
+    params = {"name": name_pattern}
+    if namespace:
+        params["namespace"] = namespace
+    return safe_get("search_symbols", params)
+
+@mcp.tool()
+def get_data_references_to(address: str) -> list:
+    """
+    Get all data references pointing to a specific address.
+    
+    Args:
+        address: Target address (hex string like "0x401000" or decimal)
+        
+    Returns:
+        List of data references with source addresses and context information
+        
+    Example:
+        get_data_references_to("0x401000")
+    """
+    return safe_get("data_references_to", {"address": address})
+
+@mcp.tool()
+def get_code_references_to(address: str) -> list:
+    """
+    Get all code references pointing to a specific address with instruction context.
+    
+    Args:
+        address: Target address (hex string like "0x401000" or decimal)
+        
+    Returns:
+        List of code references with source addresses, functions, and disassembly context
+        
+    Example:
+        get_code_references_to("0x401000")
+    """
+    return safe_get("code_references_to", {"address": address})
+
+@mcp.tool()
+def get_function_callees(function_address: str) -> list:
+    """
+    Get all functions called by the specified function.
+    
+    Args:
+        function_address: Address of the function to analyze (hex string like "0x401000" or decimal)
+        
+    Returns:
+        List of called functions with their names, addresses, and call sites
+        
+    Example:
+        get_function_callees("0x401000")
+    """
+    return safe_get("callees", {"function_address": function_address})
+
+@mcp.tool()
+def get_function_callers(function_address: str) -> list:
+    """
+    Get all functions that call the specified function.
+    
+    Args:
+        function_address: Address of the function to analyze (hex string like "0x401000" or decimal)
+        
+    Returns:
+        List of calling functions with their names and addresses
+        
+    Example:
+        get_function_callers("0x401000")
+    """
+    return safe_get("callers", {"function_address": function_address})
 
 if __name__ == "__main__":
     print("Starting MCP bridge service...")

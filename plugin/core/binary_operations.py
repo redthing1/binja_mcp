@@ -220,6 +220,315 @@ class BinaryOperations:
 
         return segments[offset : offset + limit]
 
+    def get_memory_map(self) -> Dict[str, Any]:
+        """Get comprehensive memory layout information including segments and sections"""
+        if not self._current_view:
+            raise RuntimeError("No binary loaded")
+        
+        memory_map = {
+            "segments": [],
+            "sections": [],
+            "address_range": {
+                "start": hex(self._current_view.start),
+                "end": hex(self._current_view.end),
+                "length": self._current_view.end - self._current_view.start
+            },
+            "entry_point": hex(self._current_view.entry_point) if self._current_view.entry_point else None,
+            "entry_functions": []
+        }
+        
+        # Add entry functions if available
+        try:
+            if hasattr(self._current_view, 'entry_functions'):
+                for func in self._current_view.entry_functions:
+                    memory_map["entry_functions"].append({
+                        "name": func.name,
+                        "address": hex(func.start)
+                    })
+        except Exception as e:
+            bn.log_debug(f"Could not get entry functions: {e}")
+        
+        # Add segment information with entropy
+        for segment in self._current_view.segments:
+            segment_info = {
+                "start": hex(segment.start),
+                "end": hex(segment.end),
+                "length": segment.end - segment.start,
+                "permissions": {
+                    "read": getattr(segment, 'readable', False),
+                    "write": getattr(segment, 'writable', False),
+                    "execute": getattr(segment, 'executable', False)
+                },
+                "type": "segment"
+            }
+            
+            # Add entropy for segments (sample first 4KB for performance)
+            try:
+                sample_size = min(4096, segment.end - segment.start)
+                if sample_size > 0:
+                    entropy_values = self._current_view.get_entropy(segment.start, sample_size)
+                    if entropy_values:
+                        segment_info["avg_entropy"] = sum(entropy_values) / len(entropy_values)
+            except Exception as e:
+                bn.log_debug(f"Could not calculate entropy for segment at {hex(segment.start)}: {e}")
+            
+            memory_map["segments"].append(segment_info)
+        
+        # Add section information
+        for section_name, section in self._current_view.sections.items():
+            section_info = {
+                "name": section.name,
+                "start": hex(section.start),
+                "end": hex(section.end),
+                "length": section.length,
+                "type": "section"
+            }
+            memory_map["sections"].append(section_info)
+        
+        return memory_map
+
+    def get_sections(self, offset: int = 0, limit: int = 100) -> List[Dict[str, Any]]:
+        """Get detailed information about binary sections"""
+        if not self._current_view:
+            raise RuntimeError("No binary loaded")
+        
+        sections = []
+        for section_name, section in self._current_view.sections.items():
+            section_info = {
+                "name": section.name,
+                "start": hex(section.start),
+                "end": hex(section.end),
+                "length": section.length,
+                "type": getattr(section, 'type', 'unknown')
+            }
+            sections.append(section_info)
+        
+        # Sort by start address
+        sections.sort(key=lambda x: int(x["start"], 16))
+        return sections[offset : offset + limit]
+
+    def get_entropy(self, address: int, length: int, block_size: int = 256) -> Dict[str, Any]:
+        """Calculate entropy for a specific memory region"""
+        if not self._current_view:
+            raise RuntimeError("No binary loaded")
+        
+        try:
+            # Validate parameters
+            if length <= 0:
+                raise ValueError("Length must be positive")
+            if block_size <= 0:
+                block_size = length  # Use entire region as one block
+            
+            entropy_values = self._current_view.get_entropy(address, length, block_size)
+            
+            result = {
+                "address": hex(address),
+                "length": length,
+                "block_size": block_size,
+                "entropy_values": entropy_values,
+                "avg_entropy": sum(entropy_values) / len(entropy_values) if entropy_values else 0.0,
+                "max_entropy": max(entropy_values) if entropy_values else 0.0,
+                "min_entropy": min(entropy_values) if entropy_values else 0.0
+            }
+            
+            return result
+            
+        except Exception as e:
+            bn.log_error(f"Error calculating entropy at {hex(address)}: {e}")
+            raise
+
+    def search_symbols_by_name(self, name_pattern: str, namespace: str = None) -> List[Dict[str, Any]]:
+        """Search for symbols by name pattern"""
+        if not self._current_view:
+            raise RuntimeError("No binary loaded")
+        
+        results = []
+        
+        try:
+            # Direct name lookup
+            symbols = self._current_view.get_symbols_by_name(name_pattern, namespace)
+            for symbol in symbols:
+                symbol_info = {
+                    "name": symbol.name,
+                    "address": hex(symbol.address),
+                    "type": str(symbol.type),
+                    "namespace": symbol.namespace.name if symbol.namespace else None
+                }
+                results.append(symbol_info)
+            
+            # If no exact matches, try partial matching
+            if not results:
+                for symbol in self._current_view.symbols:
+                    if name_pattern.lower() in symbol.name.lower():
+                        symbol_info = {
+                            "name": symbol.name,
+                            "address": hex(symbol.address),
+                            "type": str(symbol.type),
+                            "namespace": symbol.namespace.name if symbol.namespace else None
+                        }
+                        results.append(symbol_info)
+        
+        except Exception as e:
+            bn.log_error(f"Error searching symbols: {e}")
+            raise
+        
+        return results
+
+    def get_data_references_to(self, address: int) -> List[Dict[str, Any]]:
+        """Get detailed data references to a specific address"""
+        if not self._current_view:
+            raise RuntimeError("No binary loaded")
+        
+        references = []
+        
+        try:
+            # get_data_refs returns a generator of addresses (int)
+            data_ref_addresses = list(self._current_view.get_data_refs(address))
+            
+            for ref_addr in data_ref_addresses:
+                ref_info = {
+                    "source_address": hex(ref_addr),
+                    "target_address": hex(address),
+                    "reference_type": "data"
+                }
+                
+                # Try to find the function containing this reference
+                func = self._current_view.get_function_at(ref_addr)
+                if func:
+                    ref_info["function"] = func.name
+                
+                references.append(ref_info)
+        
+        except Exception as e:
+            bn.log_error(f"Error getting data references to {hex(address)}: {e}")
+            raise
+        
+        return references
+
+    def get_code_references_to(self, address: int) -> List[Dict[str, Any]]:
+        """Get detailed code references to a specific address"""
+        if not self._current_view:
+            raise RuntimeError("No binary loaded")
+        
+        references = []
+        
+        try:
+            # get_code_refs returns a generator of ReferenceSource objects
+            code_refs = list(self._current_view.get_code_refs(address))
+            
+            for ref in code_refs:
+                ref_info = {
+                    "source_address": hex(ref.address),
+                    "target_address": hex(address),
+                    "reference_type": "code",
+                    "function": ref.function.name if ref.function else None,
+                    "architecture": str(ref.arch) if ref.arch else None
+                }
+                
+                # Try to get the instruction at the source address for context
+                try:
+                    disasm = self._current_view.get_disassembly(ref.address)
+                    if disasm:
+                        instruction = disasm.split('\n')[0]
+                        ref_info["instruction"] = instruction.strip()
+                except Exception:
+                    pass
+                
+                references.append(ref_info)
+        
+        except Exception as e:
+            bn.log_error(f"Error getting code references to {hex(address)}: {e}")
+            raise
+        
+        return references
+
+    def get_callees(self, function_address: int) -> List[Dict[str, Any]]:
+        """Get functions called by the specified function"""
+        if not self._current_view:
+            raise RuntimeError("No binary loaded")
+        
+        func = self._current_view.get_function_at(function_address)
+        if not func:
+            raise ValueError(f"No function found at address {hex(function_address)}")
+        
+        callees = []
+        
+        try:
+            # Calculate function size using address ranges
+            total_size = 0
+            if hasattr(func, 'address_ranges') and func.address_ranges:
+                total_size = sum(addr_range.end - addr_range.start for addr_range in func.address_ranges)
+            else:
+                # Fallback calculation
+                total_size = getattr(func, 'highest_address', func.start + 1) - func.start
+            
+            # Get all code references from this function
+            code_ref_addresses = self._current_view.get_code_refs_from(func.start, length=total_size)
+            
+            for ref_addr in code_ref_addresses:
+                # Check if the reference points to a function
+                target_func = self._current_view.get_function_at(ref_addr)
+                if target_func:
+                    callee_info = {
+                        "name": target_func.name,
+                        "address": hex(target_func.start),
+                        "call_site": hex(ref_addr)
+                    }
+                    callees.append(callee_info)
+            
+            # Remove duplicates based on target function address
+            seen_addresses = set()
+            unique_callees = []
+            for callee in callees:
+                if callee["address"] not in seen_addresses:
+                    seen_addresses.add(callee["address"])
+                    unique_callees.append(callee)
+            
+            return unique_callees
+        
+        except Exception as e:
+            bn.log_error(f"Error getting callees for function at {hex(function_address)}: {e}")
+            raise
+
+    def get_callers(self, function_address: int) -> List[Dict[str, Any]]:
+        """Get functions that call the specified function"""
+        if not self._current_view:
+            raise RuntimeError("No binary loaded")
+        
+        func = self._current_view.get_function_at(function_address)
+        if not func:
+            raise ValueError(f"No function found at address {hex(function_address)}")
+        
+        callers = []
+        
+        try:
+            # Use the function's callers property
+            if hasattr(func, 'callers'):
+                for caller in func.callers:
+                    caller_info = {
+                        "name": caller.name,
+                        "address": hex(caller.start)
+                    }
+                    callers.append(caller_info)
+            else:
+                # Fallback: get code references to this function
+                code_refs = list(self._current_view.get_code_refs(func.start))
+                
+                for ref in code_refs:
+                    if ref.function:
+                        caller_info = {
+                            "name": ref.function.name,
+                            "address": hex(ref.function.start),
+                            "call_site": hex(ref.address)
+                        }
+                        callers.append(caller_info)
+        
+        except Exception as e:
+            bn.log_error(f"Error getting callers for function at {hex(function_address)}: {e}")
+            raise
+        
+        return callers
+
     def rename_function(self, old_name: str, new_name: str) -> bool:
         """Rename a function using multiple fallback methods.
 

@@ -204,6 +204,130 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
                 segments = self.binary_ops.get_segments(offset, limit)
                 self._send_json_response({"segments": segments})
 
+            elif path == "/memory_map":
+                try:
+                    memory_map = self.binary_ops.get_memory_map()
+                    self._send_json_response(memory_map)
+                except Exception as e:
+                    bn.log_error(f"Error getting memory map: {e}")
+                    self._send_json_response({"error": str(e)}, 500)
+
+            elif path == "/sections":
+                try:
+                    sections = self.binary_ops.get_sections(offset, limit)
+                    self._send_json_response({"sections": sections})
+                except Exception as e:
+                    bn.log_error(f"Error getting sections: {e}")
+                    self._send_json_response({"error": str(e)}, 500)
+
+            elif path == "/entropy":
+                address_param = params.get("address")
+                length_param = params.get("length")
+                block_size_param = params.get("block_size", "256")
+                
+                # Validate required parameters
+                is_valid, address = self._validate_address_param(address_param)
+                if not is_valid:
+                    return
+                
+                if not length_param:
+                    self._send_json_response({"error": "Missing length parameter"}, 400)
+                    return
+                
+                try:
+                    length = int(length_param)
+                    block_size = int(block_size_param)
+                    
+                    if length <= 0:
+                        self._send_json_response({"error": "Length must be positive"}, 400)
+                        return
+                    
+                    entropy_info = self.binary_ops.get_entropy(address, length, block_size)
+                    self._send_json_response(entropy_info)
+                except ValueError as e:
+                    self._send_json_response({"error": f"Invalid parameter: {e}"}, 400)
+                except Exception as e:
+                    bn.log_error(f"Error calculating entropy: {e}")
+                    self._send_json_response({"error": str(e)}, 500)
+
+            elif path == "/search_symbols":
+                name_pattern = params.get("name") or params.get("pattern")
+                namespace = params.get("namespace")
+                
+                if not name_pattern:
+                    self._send_json_response({"error": "Missing name or pattern parameter"}, 400)
+                    return
+                
+                if not self._validate_string_param(name_pattern, "name_pattern"):
+                    return
+                
+                try:
+                    symbols = self.binary_ops.search_symbols_by_name(name_pattern, namespace)
+                    self._send_json_response({"symbols": symbols})
+                except Exception as e:
+                    bn.log_error(f"Error searching symbols: {e}")
+                    self._send_json_response({"error": str(e)}, 500)
+
+            elif path == "/data_references_to":
+                address_param = params.get("address")
+                
+                is_valid, address = self._validate_address_param(address_param)
+                if not is_valid:
+                    return
+                
+                try:
+                    references = self.binary_ops.get_data_references_to(address)
+                    self._send_json_response({"references": references})
+                except Exception as e:
+                    bn.log_error(f"Error getting data references: {e}")
+                    self._send_json_response({"error": str(e)}, 500)
+
+            elif path == "/code_references_to":
+                address_param = params.get("address")
+                
+                is_valid, address = self._validate_address_param(address_param)
+                if not is_valid:
+                    return
+                
+                try:
+                    references = self.binary_ops.get_code_references_to(address)
+                    self._send_json_response({"references": references})
+                except Exception as e:
+                    bn.log_error(f"Error getting code references: {e}")
+                    self._send_json_response({"error": str(e)}, 500)
+
+            elif path == "/callees":
+                address_param = params.get("function_address") or params.get("address")
+                
+                is_valid, address = self._validate_address_param(address_param, "function_address")
+                if not is_valid:
+                    return
+                
+                try:
+                    callees = self.binary_ops.get_callees(address)
+                    self._send_json_response({"callees": callees})
+                except ValueError as e:
+                    self._send_json_response({"error": str(e)}, 400)
+                except Exception as e:
+                    bn.log_error(f"Error getting callees: {e}")
+                    self._send_json_response({"error": str(e)}, 500)
+
+            elif path == "/callers":
+                address_param = params.get("function_address") or params.get("address")
+                
+                is_valid, address = self._validate_address_param(address_param, "function_address")
+                if not is_valid:
+                    return
+                
+                try:
+                    callers = self.binary_ops.get_callers(address)
+                    self._send_json_response({"callers": callers})
+                except ValueError as e:
+                    self._send_json_response({"error": str(e)}, 400)
+                except Exception as e:
+                    bn.log_error(f"Error getting callers: {e}")
+                    self._send_json_response({"error": str(e)}, 500)
+
             elif path == "/imports":
                 imports = self.endpoints.get_imports(offset, limit)
                 self._send_json_response({"imports": imports})
