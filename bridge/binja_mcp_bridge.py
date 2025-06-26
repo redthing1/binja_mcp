@@ -141,44 +141,54 @@ def rename_data(address: str, new_name: str) -> str:
 @mcp.tool()
 def set_comment(address: str, comment: str) -> str:
     """
-    Set a comment at a specific address.
+    Set an address comment at a specific address. Address comments are global to the binary 
+    and visible everywhere that address appears. Use primarily for data annotations, global 
+    constants, or memory layout notes. For code annotations within functions, prefer function 
+    comments instead.
     """
     return safe_post("comment", {"address": address, "comment": comment})
 
 @mcp.tool()
 def get_comment(address: str) -> str:
     """
-    Get the comment at a specific address.
+    Get the address comment at a specific address. Address comments are global annotations
+    visible throughout the binary wherever this address appears.
     """
     return safe_get("comment", {"address": address})[0]
 
 @mcp.tool()
 def delete_comment(address: str) -> str:
     """
-    Delete the comment at a specific address.
+    Delete the address comment at a specific address. This removes the global annotation
+    that was visible throughout the binary at this address.
     """
     return safe_post("comment", {"address": address, "_method": "DELETE"})
 
-# @mcp.tool()
-# def set_function_comment(function_name: str, comment: str) -> str:
-#     """
-#     Set a comment for a function.
-#     """
-#     return safe_post("comment/function", {"name": function_name, "comment": comment})
+@mcp.tool()
+def set_function_comment(function_name: str, comment: str) -> str:
+    """
+    Set a function comment. Function comments are specific to individual functions and only 
+    visible within that function's context. Use for function-level documentation, behavior 
+    descriptions, and ALL code annotations within functions (disassembly, decompilation analysis, 
+    algorithm explanations, etc.). This is the preferred method for annotating function code.
+    """
+    return safe_post("comment/function", {"name": function_name, "comment": comment})
 
-# @mcp.tool()
-# def get_function_comment(function_name: str) -> str:
-#     """
-#     Get the comment for a function.
-#     """
-#     return safe_get("comment/function", {"name": function_name})[0]
+@mcp.tool()
+def get_function_comment(function_name: str) -> str:
+    """
+    Get the function comment. Returns the function-specific comment that is only visible 
+    within this function's context, not address comments that might exist at the function's address.
+    """
+    return safe_get("comment/function", {"name": function_name})[0]
 
-# @mcp.tool()
-# def delete_function_comment(function_name: str) -> str:
-#     """
-#     Delete the comment for a function.
-#     """
-#     return safe_post("comment/function", {"name": function_name, "_method": "DELETE"})
+@mcp.tool()
+def delete_function_comment(function_name: str) -> str:
+    """
+    Delete the function comment. This removes only the function-specific comment, 
+    not any address comments that might exist at the function's address.
+    """
+    return safe_post("comment/function", {"name": function_name, "_method": "DELETE"})
 
 @mcp.tool()
 def list_segments(offset: int = 0, limit: int = 100) -> list:
