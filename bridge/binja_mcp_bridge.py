@@ -708,23 +708,6 @@ def get_analysis_info() -> str:
     """
     return safe_get("analysisInfo")
 
-@mcp.tool()
-def get_file_metadata() -> list:
-    """
-    Get comprehensive file metadata including file properties, binary information,
-    architecture details, platform info, segments, sections, imports/exports, and statistics.
-    
-    Returns detailed information about:
-    - File properties (name, size, timestamps, modification status)
-    - Binary view properties (start/end offsets, length, view type)
-    - Architecture information (name, address size, endianness, instruction alignment)
-    - Platform details (name, calling conventions, system call convention)
-    - Entry point information
-    - Segment and section details with permissions
-    - Import and export symbols
-    - Basic statistics (function count, symbol count, etc.)
-    """
-    return safe_get("fileMetadata")
 
 @mcp.tool()
 def get_dominance_tree(function_name: str) -> str:
@@ -1059,6 +1042,30 @@ def get_function_callers(function_address: str) -> list:
         get_function_callers("0x401000")
     """
     return safe_get("callers", {"function_address": function_address})
+
+
+# Enhanced metadata tools
+
+@mcp.tool()
+def get_file_system_info() -> list:
+    """
+    Get filesystem information about the loaded binary file.
+    
+    Returns:
+        Filesystem properties: filename, size, timestamps, and modification status
+    """
+    return safe_get("file_system_info")
+
+@mcp.tool()
+def get_binary_info() -> list:
+    """
+    Get comprehensive binary analysis information.
+    
+    Returns:
+        Complete binary analysis: architecture, platform, entry points, segments, sections, and statistics
+    """
+    return safe_get("binary_info")
+
 
 if __name__ == "__main__":
     print("Starting MCP bridge service...")

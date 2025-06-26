@@ -3616,20 +3616,15 @@ class BinaryOperations:
                 "error": str(e)
             }
 
-    def get_file_metadata(self) -> Dict[str, Any]:
-        """Get comprehensive file metadata information.
-        
-        Returns:
-            Dictionary with complete file metadata including file info, 
-            binary properties, architecture details, and checksums
-        """
+
+    def get_file_system_info(self) -> Dict[str, Any]:
+        """Get filesystem information about the loaded file (name, size, timestamps)."""
         if not self._current_view:
             raise RuntimeError("No binary loaded")
-            
+        
         try:
-            metadata = {}
+            file_info = {}
             
-            # File information
             if self._current_view.file:
                 file_info = {
                     "filename": self._current_view.file.filename,
@@ -3638,7 +3633,7 @@ class BinaryOperations:
                     "has_database": self._current_view.file.has_database,
                 }
                 
-                # Get file size if available
+                # Get file size and timestamps if available
                 import os
                 try:
                     if os.path.exists(self._current_view.file.original_filename):
@@ -3651,15 +3646,26 @@ class BinaryOperations:
                         file_info["accessed_time"] = stat.st_atime
                 except (OSError, IOError):
                     pass
-                    
-                metadata["file"] = file_info
             
-            # Binary view properties
+            return file_info
+            
+        except Exception as e:
+            bn.log_error(f"Error getting file system info: {e}")
+            return {"error": str(e)}
+
+    def get_binary_info(self) -> Dict[str, Any]:
+        """Get comprehensive binary analysis information (architecture, platform, segments, sections, statistics)."""
+        if not self._current_view:
+            raise RuntimeError("No binary loaded")
+        
+        try:
             binary_info = {
-                "start_offset": hex(self._current_view.start),
-                "end_offset": hex(self._current_view.end),
-                "length": self._current_view.end - self._current_view.start,
-                "view_type": str(self._current_view.view_type) if hasattr(self._current_view, 'view_type') else None,
+                "view": {
+                    "start_offset": hex(self._current_view.start),
+                    "end_offset": hex(self._current_view.end),
+                    "length": self._current_view.end - self._current_view.start,
+                    "view_type": str(self._current_view.view_type) if hasattr(self._current_view, 'view_type') else None,
+                }
             }
             
             # Architecture information
@@ -3669,7 +3675,6 @@ class BinaryOperations:
                     "endianness": str(self._current_view.endianness),
                 }
                 
-                # Safely add architecture properties that might exist
                 try:
                     if hasattr(self._current_view.arch, 'address_size'):
                         arch_info["address_size"] = self._current_view.arch.address_size
@@ -3678,7 +3683,7 @@ class BinaryOperations:
                 except:
                     pass
                     
-                metadata["architecture"] = arch_info
+                binary_info["architecture"] = arch_info
             
             # Platform information
             if self._current_view.platform:
@@ -3686,7 +3691,6 @@ class BinaryOperations:
                     "name": str(self._current_view.platform),
                 }
                 
-                # Safely add platform properties
                 try:
                     if hasattr(self._current_view.platform, 'calling_conventions'):
                         platform_info["calling_conventions"] = [str(cc) for cc in self._current_view.platform.calling_conventions]
@@ -3695,7 +3699,7 @@ class BinaryOperations:
                 except:
                     pass
                     
-                metadata["platform"] = platform_info
+                binary_info["platform"] = platform_info
             
             # Entry point information
             if self._current_view.entry_point:
@@ -3704,12 +3708,11 @@ class BinaryOperations:
                     "function_name": None
                 }
                 
-                # Try to get entry function name
                 entry_func = self._current_view.get_function_at(self._current_view.entry_point)
                 if entry_func:
                     entry_info["function_name"] = entry_func.name
                     
-                metadata["entry_point"] = entry_info
+                binary_info["entry_point"] = entry_info
             
             # Segment information
             segments_info = []
@@ -3727,11 +3730,10 @@ class BinaryOperations:
                         }
                         segments_info.append(seg_info)
                     except Exception:
-                        # Skip malformed segments
                         continue
             except Exception:
                 pass
-            metadata["segments"] = segments_info
+            binary_info["segments"] = segments_info
             
             # Section information
             sections_info = []
@@ -3747,22 +3749,23 @@ class BinaryOperations:
                         }
                         sections_info.append(sect_info)
                     except Exception:
-                        # Skip malformed sections
                         continue
             except Exception:
                 pass
-            metadata["sections"] = sections_info
+            binary_info["sections"] = sections_info
             
-            # Import/Export information
+            # Import/Export counts
             try:
-                metadata["imports"] = [str(sym) for sym in self._current_view.get_symbols_of_type(bn.SymbolType.ImportedFunctionSymbol)]
+                import_count = len(list(self._current_view.get_symbols_of_type(bn.SymbolType.ImportedFunctionSymbol)))
+                binary_info["import_count"] = import_count
             except Exception:
-                metadata["imports"] = []
+                binary_info["import_count"] = 0
             
             try:
-                metadata["exports"] = [str(sym) for sym in self._current_view.get_symbols_of_type(bn.SymbolType.ExportedFunctionSymbol)]
+                export_count = len(list(self._current_view.get_symbols_of_type(bn.SymbolType.ExportedFunctionSymbol)))
+                binary_info["export_count"] = export_count
             except Exception:
-                metadata["exports"] = []
+                binary_info["export_count"] = 0
             
             # Basic statistics
             stats = {
@@ -3771,18 +3774,63 @@ class BinaryOperations:
                 "string_count": len(self._current_view.strings),
                 "data_variable_count": len(self._current_view.data_vars),
             }
-            metadata["statistics"] = stats
+            binary_info["statistics"] = stats
             
-            # Add the binary_info to metadata
-            metadata["binary"] = binary_info
-            
-            return metadata
+            return binary_info
             
         except Exception as e:
-            bn.log_error(f"Error getting file metadata: {e}")
-            return {
-                "error": str(e)
-            }
+            bn.log_error(f"Error getting binary info: {e}")
+            return {"error": str(e)}
+
+    def get_imports(self, offset: int = 0, limit: int = 100) -> List[Dict[str, Any]]:
+        """Get imported symbols with pagination."""
+        if not self._current_view:
+            raise RuntimeError("No binary loaded")
+        
+        try:
+            imports = []
+            symbols = list(self._current_view.get_symbols_of_type(bn.SymbolType.ImportedFunctionSymbol))
+            
+            for sym in symbols[offset:offset + limit]:
+                import_info = {
+                    "name": sym.name,
+                    "address": hex(sym.address),
+                    "type": "imported_function"
+                }
+                if sym.namespace:
+                    import_info["namespace"] = sym.namespace.name
+                imports.append(import_info)
+            
+            return imports
+            
+        except Exception as e:
+            bn.log_error(f"Error getting imports: {e}")
+            return []
+
+    def get_exports(self, offset: int = 0, limit: int = 100) -> List[Dict[str, Any]]:
+        """Get exported symbols with pagination."""
+        if not self._current_view:
+            raise RuntimeError("No binary loaded")
+        
+        try:
+            exports = []
+            symbols = list(self._current_view.get_symbols_of_type(bn.SymbolType.ExportedFunctionSymbol))
+            
+            for sym in symbols[offset:offset + limit]:
+                export_info = {
+                    "name": sym.name,
+                    "address": hex(sym.address),
+                    "type": "exported_function"
+                }
+                if sym.namespace:
+                    export_info["namespace"] = sym.namespace.name
+                exports.append(export_info)
+            
+            return exports
+            
+        except Exception as e:
+            bn.log_error(f"Error getting exports: {e}")
+            return []
 
     # ========== ENHANCED STRUCT AND TYPE MANAGEMENT METHODS ==========
     

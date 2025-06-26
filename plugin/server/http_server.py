@@ -1295,8 +1295,26 @@ class MCPRequestHandler(BaseHTTPRequestHandler):
                 self._send_json_response(result)
 
             elif path == "/fileMetadata":
-                result = self.binary_ops.get_file_metadata()
+                # Legacy endpoint - now returns binary info only
+                result = self.binary_ops.get_binary_info()
                 self._send_json_response(result)
+
+            elif path == "/file_system_info":
+                try:
+                    result = self.binary_ops.get_file_system_info()
+                    self._send_json_response(result)
+                except Exception as e:
+                    bn.log_error(f"Error getting file system info: {e}")
+                    self._send_json_response({"error": str(e)}, 500)
+
+            elif path == "/binary_info":
+                try:
+                    result = self.binary_ops.get_binary_info()
+                    self._send_json_response(result)
+                except Exception as e:
+                    bn.log_error(f"Error getting binary info: {e}")
+                    self._send_json_response({"error": str(e)}, 500)
+
 
             elif path == "/dominanceTree":
                 function_name = params.get("functionName")
